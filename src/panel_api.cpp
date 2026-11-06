@@ -185,10 +185,15 @@ bool startPanelPinChange(const char *currentPin,const char *newPin) {
     snprintf(body,sizeof(body),"{\"currentPin\":\"%s\",\"newPin\":\"%s\"}",currentPin,newPin);
     return begin(PanelRequest::ChangePin);
 }
-bool takePanelResult(PanelStatus &status,PanelRequest &kind,PanelData &data) {
+bool takePanelResult(PanelStatus &status,PanelRequest &kind,PanelData &data,bool &layoutChanged,bool &detailImageChanged) {
     if(!busy || !finished.load()) return false;
     status=result; kind=operation;
-    if (kind==PanelRequest::Read && status==PanelStatus::Ok) data=std::move(nextData);
+    if (kind==PanelRequest::Read && status==PanelStatus::Ok) {
+        layoutChanged=!panel::samePanelLayout(data,nextData);
+        detailImageChanged=strcmp(data.detailId,nextData.detailId) || data.detailBytes!=nextData.detailBytes ||
+                           (data.detailBytes && memcmp(data.detailImage.get(),nextData.detailImage.get(),data.detailBytes));
+        data=std::move(nextData);
+    }
     finished.store(false); busy=false;
     return true;
 }

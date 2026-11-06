@@ -84,8 +84,8 @@ void networkView() {
         for(int row=0;row<5 && wifiPage*5+row<scanCount;++row) {
             int i=wifiPage*5+row,y=117+52*row;
             box(16,y,766,47);
-            lcd.setClipRect(28,y,630,47);
-            label(32,y+9,WiFi.SSID(i),ink,2); lcd.clearClipRect();
+            lcd->setClipRect(28,y,630,47);
+            label(32,y+9,WiFi.SSID(i),ink,2); lcd->clearClipRect();
             label(671,y+14,String(WiFi.RSSI(i))+" dBm",muted);
         }
         const char *actions[]={"Rescan","Previous","Next"};

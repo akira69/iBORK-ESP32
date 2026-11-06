@@ -28,7 +28,7 @@ After verifying the backup, upload the build with `pio run -e crowpanel-v3 -t up
 1. Configure a dedicated token on your [iBORK server](https://github.com/akira69/iBORK/blob/main/docs/panel-api.md). You can enable read-only access or configure a separate panel PIN for controls.
 2. Create the private header `include/panel_local.h` in your checkout. Create the `include` directory if needed. Define the macros below as C string literals. The firmware will embed these values, so keep the header, paired binaries and backups private.
 3. Rebuild and upload. On the panel, open the settings gear beside Finch13, select **Wi-Fi setup**, choose a 2.4 GHz WPA2/WPA3 Personal network and enter its passphrase. The panel waits up to 25 seconds for an address and saves successful connections. A failed attempt restores the previous configuration.
-4. Check the link indicators. The Wi-Fi icon turns green when the station connects. The service icon turns green after a fresh authenticated reading. The header shows **Live**, **Offline** or **Stale readings**.
+4. Check the link indicators. The Wi-Fi icon turns green when the station connects. The service icon turns green after a fresh authenticated reading. The header adds text for demo, offline, stale or error states.
 
 | Macro | Setting |
 | --- | --- |
@@ -43,13 +43,15 @@ If you use a reverse proxy, route `/api/v1/panel` and its subpaths to iBORK and 
 
 ## Use the dashboard
 
-The panel polls every 30 seconds. Use **Servers** to open a server and request a fresh detail reading. If a requested temperature or fan reading is missing, the panel retries once after three seconds. The screen displays the hottest reported temperature and lowest fan speed.
+The panel polls every 30 seconds. Tap a home tile to open a server and request a fresh detail reading. When the home layout hides the tiles, use **Servers** in the header. A teal outline identifies each metered server even when its reading is missing. If a requested temperature or fan reading is missing, the panel retries once after three seconds. The screen displays the hottest reported temperature and the lowest and highest fan speeds.
 
 Configure the home sections, server selection, detail widgets and electricity rate in iBORK. Charts leave gaps for unavailable readings. Costs use metered energy and the configured rate. To display custom icons, select **Copy sidebar icons to panel** in the dashboard's panel display settings. Other servers show their initials.
 
+Open **Settings → Color** to compare Teal, Amber, Ice and Crimson. Tap a palette to save it on this display. The metered badge and server tiles share a teal outline in every mode.
+
 Use **Settings → Display schedule** to set four daily brightness periods. Touching a dimmed or sleeping screen wakes it. The schedule resumes after five minutes of inactivity. The panel caches the last saved schedule for outages. Paired panels require the current PIN to change the shared schedule.
 
-Select **Power on** or **Graceful shutdown** on a supported server, then enter the current PIN to confirm. If the outcome is unknown, check the server before trying again. **Settings → Change power PIN** changes the shared PIN for all paired panels.
+On a supported server, tap the upper half of the knife switch for **Power on** or the lower half for **Graceful shutdown**, then enter the panel PIN to confirm. The lever rests vertically in the upper contacts when the chassis reports on and horizontally when it reports off. An unavailable state hides the lever. Motion between positions previews the selected action before PIN confirmation. If the outcome is unknown, check the server before trying again. **Settings → Change power PIN** changes the shared PIN for all paired panels.
 
 ## Board drivers and assets
 

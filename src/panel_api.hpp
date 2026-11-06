@@ -49,4 +49,4 @@ bool startPanelRead(const char *detailId=nullptr);
 bool startPanelDisplay(const panel::DisplaySchedule &schedule,const char *pin);
 bool startPanelPower(const char *id, const char *action, const char *pin);
 bool startPanelPinChange(const char *currentPin,const char *newPin);
-bool takePanelResult(PanelStatus &status, PanelRequest &kind, PanelData &data);
+bool takePanelResult(PanelStatus &status, PanelRequest &kind, PanelData &data,bool &layoutChanged,bool &detailImageChanged);

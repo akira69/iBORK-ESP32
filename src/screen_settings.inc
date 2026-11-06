@@ -91,7 +91,8 @@ void drawSchedule() {
     if(!*hint) {
         if(!canDim) hint="Backlight control unavailable.";
         else if(live && !connected) hint="Reconnect to iBORK to save.";
-        else if(live && !fleetData.displaySchedule.revision) hint="Waiting for a compatible iBORK server.";
+        else if(live && !fresh()) hint="Waiting for fresh iBORK readings.";
+        else if(live && !fleetData.displaySchedule.revision) hint="Update iBORK to sync the display schedule.";
         else if(live && !fleetData.canEditDisplay) hint="Set a panel PIN on iBORK to save.";
         else if(panel::localMinuteOfDay(time(nullptr))<0) hint="Normal until the clock syncs.";
     }

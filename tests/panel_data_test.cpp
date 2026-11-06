@@ -69,6 +69,11 @@ int main() {
     assert(panel::deviceIndex(data,"rack-1")==1);
     assert(panel::decode(root,data,now) && data.count==1);
     assert(data.metered==1 && data.devices[0].watts<0 && data.day[1]<0 && data.dayHours>0 && data.dayHours<1);
+    assert(!data.devices[0].metered);
+    auto *firstDevice=cJSON_GetArrayItem(cJSON_GetObjectItem(root,"devices"),0);
+    cJSON_AddTrueToObject(firstDevice,"metered");
+    assert(panel::decode(root,data,now) && data.devices[0].metered && data.devices[0].watts<0);
+    cJSON_DeleteItemFromObject(firstDevice,"metered");
     assert(!data.displaySchedule.revision && !data.canEditDisplay && data.usdPerKwh<0);
     cJSON_AddNullToObject(root,"usdPerKwh");
     for (double price : {0.20, 0.0, 1000.0}) {
@@ -99,6 +104,25 @@ int main() {
     assert(panel::decode(root,data,now,"rack-1") && data.home.items[0]==Section::Servers);
     assert(data.devices[0].widgets.count==3 && !data.devices[0].widgets.contains(Section::Controls));
     assert(!strcmp(data.detailId,"rack-1") && data.temperature==-2.5 && data.fan==0);
+    assert(std::isnan(data.fanMax)); // Older servers send only the minimum.
+    cJSON_AddNumberToObject(cJSON_GetObjectItem(root,"detail"),"fanMax",2400);
+    assert(panel::decode(root,data,now,"rack-1") && data.fan==0 && data.fanMax==2400);
+    PanelData next{};
+    assert(panel::decode(root,next,now,"rack-1"));
+    next.devices[0].watts+=1; next.temperature+=1; ++next.capturedAt;
+    assert(panel::samePanelLayout(data,next));
+    ++next.devices[0].widgets.count;
+    assert(!panel::samePanelLayout(data,next));
+    auto powerState=cJSON_AddStringToObject(cJSON_GetObjectItem(root,"detail"),"powerState","on");
+    assert(data.powered==-1 && panel::decode(root,data,now,"rack-1") && data.powered==1);
+    cJSON_SetValuestring(powerState,"off");
+    assert(panel::decode(root,data,now,"rack-1") && data.powered==0);
+    assert(panel::decode(root,next,now,"other") && next.powered==-1);
+    auto artwork=cJSON_AddStringToObject(cJSON_GetObjectItem(root,"detail"),"image","YWJj");
+    assert(panel::decode(root,next,now,"rack-1") && next.detailBytes==3 && !memcmp(next.detailImage.get(),"abc",3));
+    assert(panel::decode(root,next,now,"other") && !next.detailBytes && !next.detailImage);
+    cJSON_SetValuestring(artwork,std::string(11000,'A').c_str());
+    assert(panel::decode(root,next,now,"rack-1") && !next.detailBytes && !next.detailImage);
     using panel::DetailPoll;
     const auto &selected=data.devices[0];
     assert(panel::afterDetailRead(DetailPoll::FirstRead,data,selected)==DetailPoll::Regular);
@@ -112,7 +136,7 @@ int main() {
     data.detailId[0]=0;
     assert(panel::afterDetailRead(DetailPoll::FirstRead,data,selected)==DetailPoll::Regular);
     assert(panel::decode(root,data,now,"other") && !data.detailId[0] && std::isnan(data.temperature));
-    assert(panel::decode(root,data,now) && !data.detailId[0] && std::isnan(data.fan));
+    assert(panel::decode(root,data,now) && !data.detailId[0] && std::isnan(data.fan) && std::isnan(data.fanMax));
     auto detail=cJSON_GetObjectItem(root,"detail");
     cJSON_ReplaceItemInObject(detail,"id",cJSON_CreateString("other"));
     assert(panel::decode(root,data,now,"rack-1") && !data.detailId[0]);
