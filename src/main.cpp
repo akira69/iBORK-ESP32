@@ -12,7 +12,8 @@ namespace {
 display_hw::Display screen;
 lgfx::LGFX_Sprite frame(&screen);
 lgfx::LovyanGFX *lcd=&screen;
-bool buffered, refreshing, detailImageChanged;
+bool buffered, refreshing;
+uint8_t followups;
 unsigned refreshPixels;
 
 
@@ -108,16 +109,28 @@ String watts(float w) { return w<0?"No reading":String(w,0)+" W"; }
 // A live poll should only write rectangles whose displayed content changed.
 void publish(int x,int y,int w,int h) {
     if(!refreshing) return;
-    if(view==Fleet || view==Servers) {
+    if((view==Fleet || view==Servers) && y+h>panel::headerHeight) {
         const int bottom=min(y+h,panel::screenBottom);
         y=max(y,panel::headerHeight); h=bottom-y;
     }
     if(h<=0) return;
-    refreshPixels+=w*h;
-    if(!buffered) return;
-    screen.setClipRect(x,y,w,h);
-    frame.pushSprite(0,0);
-    screen.clearClipRect();
+    if(!buffered) {refreshPixels+=w*h; return;}
+    // Compare in internal RAM and send only changed runs to the live RGB framebuffer.
+    static lgfx::rgb565_t before[display_hw::widthPixels], after[display_hw::widthPixels];
+    for(int row=y;row<y+h;++row) {
+        frame.readRect(x,row,w,1,after);
+        screen.readRect(x,row,w,1,before);
+        for(int i=0;i<w;) {
+            while(i<w && before[i].raw==after[i].raw) ++i;
+            const int start=i;
+            while(i<w && before[i].raw!=after[i].raw) ++i;
+            if(i>start) {
+                screen.pushImage(x+start,row,i-start,1,after+start);
+                refreshPixels+=i-start;
+            }
+        }
+        if((row-y)%16==15) delay(1);
+    }
 }
 void field(String &previous,int x,int y,int w,int h,const String &value,uint32_t color,int size=1) {
     if(refreshing && previous==value) return;
@@ -235,14 +248,14 @@ bool hasSwitch(const PanelDevice &d) {
 }
 int restingPose() {
     if(!live) return fleetData.devices[selected].watts>5?4:0;
-    if(!fresh() || strcmp(fleetData.detailId,fleetData.devices[selected].id) || fleetData.powered<0) return -1;
-    return fleetData.powered?4:0;
+    const auto state=fleetData.devices[selected].powered;
+    return state<0?-1:state?4:0;
 }
 void knifeSwitch(int pose) {
     static const uint8_t *const starts[]={knife0,knife1,knife2,knife3,knife4};
     static const uint8_t *const ends[]={knife0End,knife1End,knife2End,knife3End,knife4End};
     lcd->fillRect(panel::switchX,panel::switchY,panel::switchWidth,panel::switchHeight,tile);
-    if(pose<0) label(panel::switchX+44,panel::switchY+112,"Power state unavailable",muted);
+    if(pose<0) label(panel::switchX+44,panel::switchY+112,connected?"Reading chassis state":"Offline",muted);
     else lcd->drawPng(starts[pose],assetSize(starts[pose],ends[pose]),panel::switchX,panel::switchY);
 }
 void animateSwitch(bool powerOn) {
@@ -265,10 +278,10 @@ void animateSwitch(bool powerOn) {
 void detail() {
     const auto &d=fleetData.devices[selected];
     const bool controls=hasSwitch(d);
-    if(!refreshing || detailImageChanged) {
+    if(!refreshing || d.imageChanged) {
         lcd->fillRect(16,76,80,80,bg);
-        if(strcmp(fleetData.detailId,d.id) || !fleetData.detailImage ||
-           !lcd->drawJpg(fleetData.detailImage.get(),fleetData.detailBytes,16,76,80,80))
+        if(!d.detailImage ||
+           !lcd->drawJpg(d.detailImage.get(),d.detailBytes,16,76,80,80))
             sidebarIcon(d,36,96);
         publish(16,76,80,80);
     }
@@ -278,14 +291,20 @@ void detail() {
         label(105,130,d.model,muted);
         lcd->clearClipRect();
         if(controls) {
-            const bool enabled=fresh() && !pendingPower;
             box(panel::switchLeft,76,784-panel::switchLeft,350);
             label(496,82,"Power control",ink,2);
-            label(496,116,"Power on",enabled?ink:muted);
-            label(496,395,"Graceful shutdown",enabled?ink:muted);
+
         }
     }
     if(controls) {
+        static bool paintedEnabled=false;
+        const bool enabled=fresh() && !pendingPower;
+        if(!refreshing || paintedEnabled!=enabled) {
+            label(496,116,"Power on",enabled?ink:muted);
+            label(496,395,"Graceful shutdown",enabled?ink:muted);
+            publish(496,116,128,23); publish(496,395,158,23);
+            paintedEnabled=enabled;
+        }
         static int paintedPose=-1;
         const int pose=restingPose();
         if(!refreshing || paintedPose!=pose) {
@@ -299,7 +318,7 @@ void detail() {
         const auto kind=d.widgets.items[i];
         if(kind==panel::Section::Controls) continue;
         const bool power=kind==panel::Section::Power, temp=kind==panel::Section::Temperature;
-        const bool current=!strcmp(fleetData.detailId,d.id);
+        const bool current=d.hasDetail;
         const bool fan=kind==panel::Section::Fan;
         const int height=fan?78:58;
         if(!refreshing) {
@@ -309,16 +328,20 @@ void detail() {
         static String powerReading,temperature,lowest,highest;
         const int x=controls?208:378, width=controls?248:378;
         if(fan) {
-            const auto rpm=[current](float speed) -> String {
-                return current && std::isfinite(speed)?String(speed,0)+" RPM":"No reading";
+            const auto rpm=[&d,current](float speed) -> String {
+                return current && std::isfinite(speed)?String(speed,0)+" RPM":d.pending || (!current && requestActive)?"Loading":"No reading";
             };
-            field(lowest,x,y+8,width,32,"Lowest: "+rpm(fleetData.fan),mint,2);
-            field(highest,x,y+40,width,32,"Highest: "+rpm(fleetData.fanMax),mint,2);
+            field(lowest,x,y+8,width,32,"Lowest: "+rpm(d.fan),mint,2);
+            field(highest,x,y+40,width,32,"Highest: "+rpm(d.fanMax),mint,2);
         } else {
-            field(power?powerReading:temperature,x,y+14,width,33,power?watts(d.watts):current && std::isfinite(fleetData.temperature)?
-                  String(fleetData.temperature,1)+u8" \u00b0C":"No reading",mint,2);
+            field(power?powerReading:temperature,x,y+14,width,33,power?watts(d.watts):current && std::isfinite(d.temperature)?
+                  String(d.temperature,1)+u8" \u00b0C":d.pending || (!current && requestActive)?"Loading":"No reading",mint,2);
         }
         y+=height+8;
+    }
+    if(controls) {
+        static String stateNote;
+        field(stateNote,660,86,114,23,d.powered>=0 && (!fresh() || (live && !d.confirmed))?"Last known":"",muted);
     }
     if(refreshing) return;
     if(y==164 && !controls) label(20,180,"No widgets enabled for this server",muted,2);
@@ -366,6 +389,30 @@ void connectionIcons() {
         lcd->drawFastHLine(605,y+7,10,link);
     }
 }
+void refreshStatus() {
+    lcd->fillRect(312,7,208,56,bar);
+    lcd->setClipRect(312,7,184,56);
+    label(315,24,healthText(),gold);
+    lcd->clearClipRect();
+    connectionIcons();
+    publish(312,7,318,56);
+}
+void pollSpinner() {
+    static int previous=-1;
+    const bool loading=live && connected && (requestActive || (fleetData.waiting && followups<3));
+    const int phase=loading?int((millis()/125)%8):-1;
+    if(!brightness || phase==previous) return;
+    previous=phase;
+    screen.fillRect(497,21,22,24,bar);
+    if(phase>=0) screen.fillArc(508,33,8,5,phase*45,phase*45+215,mint);
+}
+void refreshLink() {
+    refreshing=true;
+    if(buffered) lcd=&frame;
+    refreshStatus();
+    if(view==Detail) detail();
+    lcd=&screen; refreshing=false;
+}
 void drawColors() {
     label(20,89,"Color mode",ink,3);
     for(unsigned i=0;i<sizeof(palettes)/sizeof(*palettes);++i) {
@@ -404,10 +451,7 @@ void draw() {
         box(panel::navX,panel::navY,panel::navW,panel::navH);
         label(panel::navX+12,19,selector?"Servers":"< Back",ink,2);
     }
-    lcd->setClipRect(312,7,208,56);
-    label(315,24,healthText(),gold);
-    lcd->clearClipRect();
-    connectionIcons();
+    refreshStatus();
     switch(view) {
         case Fleet: case Servers: fleet(); break; case Detail: detail(); break;
         case Pin: keypad(); break; case Network: networkView(); break;
@@ -481,7 +525,7 @@ void tap(int x,int y) {
     } else if(view==Fleet || view==Servers) {
         const int i=layout().deviceAt(x,y,scrollOffset,fleetData.count);
         if(i<0) return;
-        selected=i; view=Detail; detailPoll=DetailPoll::Opened; notice="";
+        selected=i; view=Detail; detailPoll=fleetData.artRevision?DetailPoll::Regular:DetailPoll::Opened; notice="";
     } else if(view==Detail && fresh() && !pendingPower) {
         const int hit=hasSwitch(fleetData.devices[selected])?panel::controlAt(x,y):-1;
         if (hit<0) return;
@@ -520,7 +564,7 @@ void servicePanel() {
     const bool hadData=hasData;
     const auto priorHealth=health;
     const auto priorView=view;
-    if(takePanelResult(status,kind,fleetData,layoutChanged,detailImageChanged)) {
+    if(takePanelResult(status,kind,fleetData,layoutChanged)) {
         requestActive=false;
         if(kind==PanelRequest::ChangePin) finishChangePin(status);
         else if(kind==PanelRequest::Display) finishSchedule(status);
@@ -538,21 +582,32 @@ void servicePanel() {
                 Serial.printf("iBORK panel GET OK devices=%d metered=%d rate=%.4f schedule=%u ip=%s\n",
                               fleetData.count,fleetData.metered,fleetData.usdPerKwh,
                               unsigned(fleetData.displaySchedule.revision),WiFi.localIP().toString().c_str());
+                if(fleetData.artRevision) {
+                    int power=0,art=0;
+                    for(int i=0;i<fleetData.count;++i) {
+                        power+=fleetData.devices[i].confirmed;
+                        art+=fleetData.devices[i].detailImage!=nullptr;
+                    }
+                    Serial.printf("iBORK preload: power=%d images=%d pending=%d rev=%lu\n",power,art,fleetData.waiting,(unsigned long)fleetData.artRevision);
+                }
                 if(id[0]) {
                     selected=panel::deviceIndex(fleetData,id);
                     if(selected<0) { view=Fleet; clearPin(); }
                     else if(view==Pin && !hasSwitch(fleetData.devices[selected])) { view=Detail; clearPin(); }
-                    else if(view==Detail) detailPoll=panel::afterDetailRead(detailPoll,fleetData,fleetData.devices[selected]);
+                    else if(view==Detail && !fleetData.artRevision) detailPoll=panel::afterDetailRead(detailPoll,fleetData,fleetData.devices[selected]);
                 }
                 scrollOffset=min(scrollOffset,layout().limit);
             } else Serial.printf("iBORK panel GET unavailable code=%u\n",unsigned(status));
         }
         if(view!=Network) {
-            if(kind!=PanelRequest::Read || layoutChanged || !hadData || priorView!=view ||
-               priorHealth!=health || paintedLink!=(live && fresh())) draw();
-            else if(brightness && (view==Fleet || view==Servers || view==Detail)) {
+            const bool dashboard=view==Fleet || view==Servers || view==Detail;
+            const bool statusChanged=priorHealth!=health || paintedLink!=(live && fresh());
+            if(kind!=PanelRequest::Read || layoutChanged || (!hadData && hasData) || priorView!=view ||
+               (!dashboard && statusChanged)) draw();
+            else if(brightness && dashboard) {
                 refreshing=true; refreshPixels=0;
                 if(buffered) lcd=&frame;
+                if(statusChanged) refreshStatus();
                 if(view==Detail) detail(); else fleet();
                 lcd=&screen; refreshing=false;
                 Serial.printf("iBORK refresh: %u pixels\n",refreshPixels);
@@ -561,12 +616,16 @@ void servicePanel() {
     }
     if(view==Pin && !fresh()) { view=Detail; clearPin(); notice="Refresh required"; draw(); }
     const bool opening=view==Detail && detailPoll==DetailPoll::Opened;
-    const uint32_t interval=view==Detail && detailPoll==DetailPoll::Followup ? 3000U :
-                            health==PanelStatus::Clock ? 5000U : 30000U;
-    if(connected && !requestActive && view!=Pin && view!=ChangePin && view!=DisplayPin &&
-       (opening || millis()-checkedAt>=interval)) {
-        checkedAt=millis(); requestActive=startPanelRead(view==Detail?fleetData.devices[selected].id:nullptr);
-        detailPoll=opening && requestActive ? DetailPoll::FirstRead : DetailPoll::Regular;
+    const bool warming=health==PanelStatus::Ok && fleetData.waiting && followups<3;
+    const uint32_t interval=warming?2000U:view==Detail && detailPoll==DetailPoll::Followup?3000U:
+                            health==PanelStatus::Clock?5000U:15000U;
+    if(brightness && connected && !requestActive && (opening || millis()-checkedAt>=interval)) {
+        checkedAt=millis();
+        requestActive=startPanelRead(view==Detail?fleetData.devices[selected].id:nullptr,fleetData.artRevision);
+        if(requestActive) {
+            followups=warming?followups+1:0;
+            detailPoll=opening?DetailPoll::FirstRead:DetailPoll::Regular;
+        }
     }
 }
 }
@@ -603,6 +662,7 @@ void loop() {
     serviceWiFi();
     bool online=WiFi.status()==WL_CONNECTED && WiFi.localIP()!=IPAddress();
     if(connected!=online) {
+        const auto was=view;
         connected=online;
         if(live) { clearPin(); if(view==Pin) view=Detail; }
         if(connected) {
@@ -610,15 +670,20 @@ void loop() {
             startPanelClock();
             checkedAt=millis()-30000;
         } else health=PanelStatus::Network;
-        draw();
+        if(was==view && brightness && (view==Fleet || view==Servers || view==Detail)) {
+            refreshLink();
+        } else draw();
     }
     servicePanel();
     serviceChangePin();
     serviceScreen();
     if(locked && millis()-lockedAt>=30000) { locked=false; notice=""; if(view==Pin) draw(); }
     if(brightness && paintedLink!=(live && fresh())) {
-        draw();
+        if(view==Fleet || view==Servers || view==Detail) {
+            refreshLink();
+        } else draw();
     }
+    pollSpinner();
     if(touchReady) {
         uint16_t x=0,y=0;
         const auto event=display_hw::readTouch(x,y);

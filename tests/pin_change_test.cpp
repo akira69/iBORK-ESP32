@@ -47,7 +47,7 @@ int main() {
     assert(!strcmp(panel::requestLine(PanelRequest::Power),"POST /api/v1/panel/power"));
     assert(!strcmp(panel::requestLine(PanelRequest::ChangePin),"POST /api/v1/panel/pin"));
     using R=PanelRequest; using S=PanelStatus;
-    static_assert(panel::responseCapacity(R::Read)==84*1024,"snapshot limit");
+    static_assert(panel::responseCapacity(R::Read)==256*1024,"snapshot limit");
     for(auto kind:{R::Power,R::ChangePin,R::Display}) assert(panel::responseCapacity(kind)==1024);
     assert(panel::responseStatus(R::ChangePin,404)==S::Unsupported);
     assert(panel::responseStatus(R::ChangePin,405)==S::Unsupported);

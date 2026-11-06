@@ -43,7 +43,7 @@ If you use a reverse proxy, route `/api/v1/panel` and its subpaths to iBORK and 
 
 ## Use the dashboard
 
-The panel polls every 30 seconds. Tap a home tile to open a server and request a fresh detail reading. When the home layout hides the tiles, use **Servers** in the header. A teal outline identifies each metered server even when its reading is missing. If a requested temperature or fan reading is missing, the panel retries once after three seconds. The screen displays the hottest reported temperature and the lowest and highest fan speeds.
+While the screen is lit, the panel polls all included servers every 15 seconds. Opening a tile uses the cached chassis state, fan range, temperature and artwork immediately. Polling resumes on wake. When the home layout hides the tiles, use **Servers** in the header. A teal outline identifies each metered server even when its reading is missing. While the service is reading a chassis, the panel shows a spinner and checks again after two seconds, up to three times per cycle. The screen displays the hottest reported temperature and the lowest and highest fan speeds.
 
 Configure the home sections, server selection, detail widgets and electricity rate in iBORK. Charts leave gaps for unavailable readings. Costs use metered energy and the configured rate. To display custom icons, select **Copy sidebar icons to panel** in the dashboard's panel display settings. Other servers show their initials.
 
@@ -51,7 +51,7 @@ Open **Settings → Color** to compare Teal, Amber, Ice and Crimson. Tap a palet
 
 Use **Settings → Display schedule** to set four daily brightness periods. Touching a dimmed or sleeping screen wakes it. The schedule resumes after five minutes of inactivity. The panel caches the last saved schedule for outages. Paired panels require the current PIN to change the shared schedule.
 
-On a supported server, tap the upper half of the knife switch for **Power on** or the lower half for **Graceful shutdown**, then enter the panel PIN to confirm. The lever rests vertically in the upper contacts when the chassis reports on and horizontally when it reports off. An unavailable state hides the lever. Motion between positions previews the selected action before PIN confirmation. If the outcome is unknown, check the server before trying again. **Settings → Change power PIN** changes the shared PIN for all paired panels.
+On a supported server, tap the upper half of the knife switch for **Power on** or the lower half for **Graceful shutdown**, then enter the panel PIN to confirm. The lever rests vertically in the upper contacts when the chassis reports on and horizontally when it reports off. During a temporary loss of telemetry the lever holds its last confirmed position, labeled Last known. Motion between positions previews the selected action before PIN confirmation. If the outcome is unknown, check the server before trying again. **Settings → Change power PIN** changes the shared PIN for all paired panels.
 
 ## Board drivers and assets
 

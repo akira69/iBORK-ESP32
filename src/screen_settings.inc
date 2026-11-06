@@ -25,7 +25,7 @@ void setScreenBrightness(int percent) {
     if(!canDim || brightness==percent) return;
     const bool wasOff=brightness==0;
     brightness=percent;
-    if(wasOff) draw();
+    if(wasOff) { checkedAt=millis()-30000; draw(); }
     display_hw::setBrightness(percent);
 }
 void serviceScreen() {
