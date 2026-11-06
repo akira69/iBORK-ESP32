@@ -9,12 +9,31 @@
 
 
 namespace {
-display_hw::Display lcd;
+display_hw::Display screen;
+lgfx::LGFX_Sprite frame(&screen);
+lgfx::LovyanGFX *lcd=&screen;
+bool buffered, refreshing;
+uint8_t followups;
+unsigned refreshPixels;
 
-enum View { Fleet, Servers, Detail, Pin, Settings, Network, ChangePin, Display, DisplayPin };
+
+enum View { Fleet, Servers, Detail, Pin, Settings, Network, ChangePin, Display, DisplayPin, Colors };
 View view=Fleet;
-constexpr uint32_t bg=0x0a131e, bar=0x101c29, tile=0x192b39, grid=0x344959;
-constexpr uint32_t ink=0xf2f7f8, muted=0xaac1cc, mint=0x64efc4, gold=0xffbc66;
+constexpr uint32_t bar=0x101c29, grid=0x344959, teal=0x64efc4;
+struct Palette { const char *name; uint32_t background, surface, accent; };
+constexpr Palette palettes[]={
+    {"Teal",0x0a131e,0x192b39,teal}, {"Amber",0x1d1711,0x352d22,0xffbf69},
+    {"Ice",0x101a29,0x223649,0x9bccff}, {"Crimson",0x220e15,0x441c29,0xff6378}
+};
+static_assert(sizeof(palettes)/sizeof(*palettes)==4,"Color picker has four tiles");
+unsigned theme;
+const char *themeNote="";
+uint32_t bg=palettes[0].background, tile=palettes[0].surface, mint=palettes[0].accent;
+void setTheme(unsigned index) {
+    theme=index<sizeof(palettes)/sizeof(*palettes)?index:0;
+    bg=palettes[theme].background; tile=palettes[theme].surface; mint=palettes[theme].accent;
+}
+constexpr uint32_t ink=0xf2f7f8, muted=0xaac1cc, gold=0xffbc66;
 constexpr int gearX=645, gearY=8, gearW=60, gearH=54;
 bool connected, touchReady, displayReady, hasData, requestActive, live, pendingPower;
 char pin[13]{}, pendingDevice[33]{};
@@ -36,9 +55,10 @@ void draw();
 void clearPin() { mbedtls_platform_zeroize(pin,sizeof(pin)); pinLen=0; }
 bool fresh() { return !live || (connected && hasData && health==PanelStatus::Ok && millis()-goodAt<60000); }
 
-#define ART(name) extern const uint8_t name[] asm("_binary_art_" #name "_jpg_start"); \
-                  extern const uint8_t name##End[] asm("_binary_art_" #name "_jpg_end")
-ART(ibork); ART(finch); ART(settings);
+#define ART(name,ext) extern const uint8_t name[] asm("_binary_art_" #name "_" #ext "_start"); \
+                  extern const uint8_t name##End[] asm("_binary_art_" #name "_" #ext "_end")
+ART(ibork,jpg); ART(finch,jpg); ART(settings,jpg); ART(transmission,png);
+ART(knife0,png); ART(knife1,png); ART(knife2,png); ART(knife3,png); ART(knife4,png);
 void label(int x, int y, const String &value, uint32_t color = ink, int size = 1) {
     extern const uint8_t small[] asm("_binary_fonts_panel16_vlw_start");
     extern const uint8_t medium[] asm("_binary_fonts_panel25_vlw_start");
@@ -49,17 +69,21 @@ void label(int x, int y, const String &value, uint32_t color = ink, int size = 1
         faces[0].loadFont(&data[0]), faces[1].loadFont(&data[1]), faces[2].loadFont(&data[2])
     };
     const int index = constrain(size, 1, 3) - 1;
-    if (loaded[index]) lcd.setFont(&faces[index]);
-    else lcd.setFont(&fonts::Font2);
-    lcd.setTextSize(1);
-    lcd.setTextColor(color);
-    lcd.drawString(value.c_str(), x, y);
+    if (loaded[index]) lcd->setFont(&faces[index]);
+    else lcd->setFont(&fonts::Font2);
+    lcd->setTextSize(1);
+    lcd->setTextColor(color);
+    lcd->drawString(value.c_str(), x, y);
 }
 void box(int x, int y, int w, int h, uint32_t color = tile) {
-    lcd.fillRoundRect(x,y,w,h,10,color);
+    lcd->fillRoundRect(x,y,w,h,10,color);
+}
+// The linker provides separate symbols for the bounds of each embedded file.
+size_t assetSize(const uint8_t *start,const uint8_t *end) {
+    return reinterpret_cast<uintptr_t>(end)-reinterpret_cast<uintptr_t>(start);
 }
 void image(const uint8_t *start, const uint8_t *end, int x, int y) {
-    lcd.drawJpg(start, end-start, x,y);
+    lcd->drawJpg(start,assetSize(start,end), x,y);
 }
 #include "wifi_setup.inc"
 void demo() {
@@ -74,6 +98,7 @@ void demo() {
     };
     for (int i=0;i<fleetData.count;++i) {
         samples[i].widgets=panel::defaultWidgets;
+        samples[i].metered=samples[i].watts>=0;
         fleetData.devices[i]=std::move(samples[i]);
     }
     for(float w:day) if(w>=0) { fleetData.dayKwh+=w/1000; ++fleetData.dayHours; }
@@ -81,56 +106,107 @@ void demo() {
     hasData=true;
 }
 String watts(float w) { return w<0?"No reading":String(w,0)+" W"; }
+// A live poll should only write rectangles whose displayed content changed.
+void publish(int x,int y,int w,int h) {
+    if(!refreshing) return;
+    if((view==Fleet || view==Servers) && y+h>panel::headerHeight) {
+        const int bottom=min(y+h,panel::screenBottom);
+        y=max(y,panel::headerHeight); h=bottom-y;
+    }
+    if(h<=0) return;
+    if(!buffered) {refreshPixels+=w*h; return;}
+    // Compare in internal RAM and send only changed runs to the live RGB framebuffer.
+    static lgfx::rgb565_t before[display_hw::widthPixels], after[display_hw::widthPixels];
+    for(int row=y;row<y+h;++row) {
+        frame.readRect(x,row,w,1,after);
+        screen.readRect(x,row,w,1,before);
+        for(int i=0;i<w;) {
+            while(i<w && before[i].raw==after[i].raw) ++i;
+            const int start=i;
+            while(i<w && before[i].raw!=after[i].raw) ++i;
+            if(i>start) {
+                screen.pushImage(x+start,row,i-start,1,after+start);
+                refreshPixels+=i-start;
+            }
+        }
+        if((row-y)%16==15) delay(1);
+    }
+}
+void field(String &previous,int x,int y,int w,int h,const String &value,uint32_t color,int size=1) {
+    if(refreshing && previous==value) return;
+    previous=value;
+    if(refreshing) lcd->fillRect(x,y,w,h,tile);
+    label(x,y,value,color,size);
+    publish(x,y,w,h);
+}
 template<size_t N>
 void chart(const panel::SectionBox &b,const char *title,const float (&values)[N],float hours,float kwh,uint32_t accent) {
     const int x=b.x, y=b.y, plotWidth=b.w-32;
-    box(x,y,b.w,b.h);
-    label(x+15,y+8,title,ink,2);
-    label(x+b.w-168,y+11,hasData && kwh>=0 && fleetData.usdPerKwh>=0?"$"+String(kwh*fleetData.usdPerKwh,2):"--",accent,2);
-    label(x+16,y+45,"Avg W",muted);
-    for(int dy:{69,90,111}) lcd.drawFastHLine(x+16,y+dy,plotWidth,grid);
+    static String cost,coverage;
+    static int8_t last[N];
+    if(!refreshing) {
+        box(x,y,b.w,b.h);
+        label(x+15,y+8,title,ink,2);
+        label(x+16,y+45,"Avg W",muted);
+    }
+    field(cost,x+b.w-168,y+11,156,34,hasData && kwh>=0 && fleetData.usdPerKwh>=0?
+          "$"+String(kwh*fleetData.usdPerKwh,2):"--",accent,2);
+    field(coverage,x+16,y+118,plotWidth,25,hasData?String(hours,1)+"/"+String(N==24?24:720)+" hours covered":"Waiting for readings",muted);
     float peak=1;
     for(float v:values) if(v>peak) peak=v;
+    int8_t heights[N]{};
+    for(size_t i=0;i<N;++i) heights[i]=hasData && values[i]>=0?lroundf(42*values[i]/peak):-1;
+    if(refreshing && !memcmp(heights,last,N)) return;
+    memcpy(last,heights,N);
+    if(refreshing) lcd->fillRect(x+14,y+67,plotWidth+5,48,tile);
+    for(int dy:{69,90,111}) lcd->drawFastHLine(x+16,y+dy,plotWidth,grid);
     int lastX=-1,lastY=0;
-    if(hasData) for(size_t i=0;i<N;++i) {
-        if(values[i]<0) { lastX=-1; continue; }
-        int px=x+16+plotWidth*i/(N-1),py=y+111-lroundf(42*values[i]/peak);
-        if(lastX>=0) lcd.drawWideLine(lastX,lastY,px,py,2,accent);
-        else lcd.fillCircle(px,py,2,accent);
+    for(size_t i=0;i<N;++i) {
+        if(heights[i]<0) { lastX=-1; continue; }
+        int px=x+16+plotWidth*i/(N-1),py=y+111-heights[i];
+        if(lastX>=0) lcd->drawWideLine(lastX,lastY,px,py,2,accent);
+        else lcd->fillCircle(px,py,2,accent);
         lastX=px; lastY=py;
     }
-    label(x+16,y+118,hasData?String(hours,1)+"/"+String(N==24?24:720)+" hours covered":"Waiting for readings",muted);
+    publish(x+14,y+67,plotWidth+5,48);
 }
 void sidebarIcon(const PanelDevice &d,int x,int y) {
-    if(d.sidebarImage && lcd.drawJpg(d.sidebarImage.get(),d.sidebarBytes,x,y,40,40)) return;
-    lcd.fillCircle(x+20,y+20,19,grid);
+    constexpr int size=40;
+    if(d.sidebarImage && lcd->drawJpg(d.sidebarImage.get(),d.sidebarBytes,x,y,size,size)) return;
+    lcd->fillCircle(x+size/2,y+size/2,size/2-1,grid);
     String initials=String(d.name).substring(0,2);
-    initials.toUpperCase(); label(x+8,y+9,initials);
+    initials.toUpperCase(); label(x+size/5,y+size/4,initials,ink);
 }
 void fleetCards(int start,int top,int bottom) {
     for(int i=0;i<fleetData.count;++i) {
         const int x=panel::cardX(i), y=panel::cardY(i,start);
         if(y>=bottom || y+panel::cardHeight<=top) continue;
         const auto &s=fleetData.devices[i];
+        static String readings[16];
+        if(refreshing) {
+            field(readings[i],x+51,y+26,panel::cardWidth-75,23,watts(s.watts),s.watts<0?muted:mint);
+            continue;
+        }
         box(x,y,panel::cardWidth,panel::cardHeight);
+        if(s.metered) lcd->drawRoundRect(x,y,panel::cardWidth,panel::cardHeight,10,teal);
         sidebarIcon(s,x+5,y+5);
-        lcd.setClipRect(x+51,top,panel::cardWidth-75,bottom-top);
+        lcd->setClipRect(x+51,top,panel::cardWidth-75,bottom-top);
         label(x+51,y+3,s.sidebarLabel[0]?s.sidebarLabel:s.name);
-        label(x+51,y+26,watts(s.watts),s.watts<0?muted:mint);
-        lcd.setClipRect(0,top,800,bottom-top);
-        lcd.drawLine(x+panel::cardWidth-15,y+19,x+panel::cardWidth-9,y+25,muted);
-        lcd.drawLine(x+panel::cardWidth-9,y+25,x+panel::cardWidth-15,y+31,muted);
+        field(readings[i],x+51,y+26,panel::cardWidth-75,23,watts(s.watts),s.watts<0?muted:mint);
+        lcd->setClipRect(0,top,800,bottom-top);
+        lcd->drawLine(x+panel::cardWidth-15,y+19,x+panel::cardWidth-9,y+25,muted);
+        lcd->drawLine(x+panel::cardWidth-9,y+25,x+panel::cardWidth-15,y+31,muted);
     }
-    if(!fleetData.count) label(22,start+10,hasData?"No servers on this panel":"Waiting for iBORK",muted,2);
+    if(!refreshing && !fleetData.count) label(22,start+10,hasData?"No servers on this panel":"Waiting for iBORK",muted,2);
 }
 panel::HomeLayout layout() {
     return panel::homeLayout(view==Servers?panel::selectorSections:fleetData.home,fleetData.count);
 }
 void fleet(int top=panel::headerHeight,int bottom=panel::screenBottom) {
     const auto page=layout();
-    lcd.setClipRect(0,top,800,bottom-top);
-    lcd.fillRect(0,top,800,bottom-top,bg);
-    if (!page.count) label(20,100,"No home sections enabled",muted,2);
+    lcd->setClipRect(0,top,800,bottom-top);
+    if(!refreshing) lcd->fillRect(0,top,800,bottom-top,bg);
+    if (!refreshing && !page.count) label(20,100,"No home sections enabled",muted,2);
     for (int i=0;i<page.count;++i) {
         auto b=page.boxes[i];
         b.y-=scrollOffset;
@@ -141,69 +217,146 @@ void fleet(int top=panel::headerHeight,int bottom=panel::screenBottom) {
         else {
             int metered=0; float total=0;
             for(int j=0;j<fleetData.count;++j) if(fleetData.devices[j].watts>=0) { ++metered; total+=fleetData.devices[j].watts; }
-            box(16,b.y,360,b.h,0x71e5be); box(388,b.y,298,b.h,0x22303b);
-            label(29,b.y+2,metered>0 && metered<fleetData.metered?"Partial fleet power":"Fleet power",0x102e27);
-            label(29,b.y+17,metered?watts(total):"-- W",0x102e27,3);
-            label(401,b.y+4,String(fleetData.count)+(fleetData.count==1?" server":" servers"),ink,2);
-            label(401,b.y+37,String(metered)+" metered",muted);
-            label(698,b.y+9,fleetData.usdPerKwh>=0?"$"+String(fleetData.usdPerKwh,4):"Rate",muted);
-            label(698,b.y+32,fleetData.usdPerKwh>=0?"/ kWh":"unavailable",muted);
+            static String caption,power;
+            if(!refreshing) box(b.x,b.y,b.w,b.h);
+            field(caption,30,b.y+6,248,18,metered<fleetData.metered?"Partial fleet power":"Fleet power",muted);
+            field(power,30,b.y+24,248,44,metered?watts(total):"-- W",mint,3);
+            if(refreshing) continue;
+            lcd->drawPng(transmission,assetSize(transmission,transmissionEnd),291,b.y+3);
+            label(364,b.y+10,"Electricity rate",muted);
+            label(364,b.y+34,fleetData.usdPerKwh>=0?"$"+String(fleetData.usdPerKwh,4)+" / kWh":"-- / kWh",ink);
+            if(hasData) {
+                lcd->drawRoundRect(650,b.y+17,118,36,10,teal);
+                label(663,b.y+25,String(fleetData.metered)+" metered",ink);
+            }
         }
     }
-    lcd.clearClipRect();
+    lcd->clearClipRect();
 }
 void scrollFleet(int previous) {
     const int delta=scrollOffset-previous, shift=abs(delta);
     const int height=panel::screenBottom-panel::headerHeight;
     if (shift>=height) { fleet(); return; }
     // Preserve pixels between the two positions and redraw only the uncovered strip.
-    lcd.copyRect(0,panel::headerHeight+(delta<0?shift:0),800,height-shift,
+    lcd->copyRect(0,panel::headerHeight+(delta<0?shift:0),800,height-shift,
                  0,panel::headerHeight+(delta>0?shift:0));
     if(delta>0) fleet(panel::screenBottom-shift,panel::screenBottom);
     else fleet(panel::headerHeight,panel::headerHeight+shift);
 }
-int controlsTop(const PanelDevice &d) {
-    return panel::widgetTop(d.widgets,d.controls,panel::Section::Controls);
+bool hasSwitch(const PanelDevice &d) {
+    return d.controls && d.widgets.contains(panel::Section::Controls);
+}
+int restingPose() {
+    if(!live) return fleetData.devices[selected].watts>5?4:0;
+    const auto state=fleetData.devices[selected].powered;
+    return state<0?-1:state?4:0;
+}
+void knifeSwitch(int pose) {
+    static const uint8_t *const starts[]={knife0,knife1,knife2,knife3,knife4};
+    static const uint8_t *const ends[]={knife0End,knife1End,knife2End,knife3End,knife4End};
+    lcd->fillRect(panel::switchX,panel::switchY,panel::switchWidth,panel::switchHeight,tile);
+    if(pose<0) label(panel::switchX+44,panel::switchY+112,connected?"Reading chassis state":"Offline",muted);
+    else lcd->drawPng(starts[pose],assetSize(starts[pose],ends[pose]),panel::switchX,panel::switchY);
+}
+void animateSwitch(bool powerOn) {
+    const int target=powerOn?4:0;
+    int pose=restingPose();
+    if(pose<0) pose=target;
+    if(buffered) lcd=&frame;
+    do {
+        if(pose!=target) pose+=powerOn?1:-1;
+        knifeSwitch(pose);
+        if(buffered) {
+            screen.setClipRect(panel::switchX,panel::switchY,panel::switchWidth,panel::switchHeight);
+            frame.pushSprite(0,0);
+            screen.clearClipRect();
+        }
+        delay(pose==target?220:25);
+    } while(pose!=target);
+    lcd=&screen;
 }
 void detail() {
     const auto &d=fleetData.devices[selected];
-    sidebarIcon(d,32,94);
-    lcd.setClipRect(102,77,680,82);
-    label(102,78,d.name,ink,3);
-    label(105,130,d.model,muted);
-    lcd.clearClipRect();
-    bool any=false;
-    for (int i=0;i<d.widgets.count;++i) {
-        const auto kind=d.widgets.items[i];
-        const int y=panel::widgetTop(d.widgets,d.controls,kind);
-        if (y<0) continue;
-        any=true;
-        if (kind==panel::Section::Controls) {
-            box(16,y,376,58); box(408,y,376,58);
-            label(34,y+14,"Power on",fresh() && !pendingPower?ink:muted,2);
-            label(426,y+14,"Graceful shutdown",fresh() && !pendingPower?ink:muted,2);
-        } else {
-            const bool power=kind==panel::Section::Power, temp=kind==panel::Section::Temperature;
-            const float value=temp?fleetData.temperature:fleetData.fan;
-            const bool measured=!strcmp(fleetData.detailId,d.id) && std::isfinite(value);
-            box(16,y,768,58);
-            label(34,y+18,power?"Power draw":temp?"Hottest temperature":"Lowest fan speed",muted);
-            label(378,y+14,power?watts(d.watts):measured?String(value,temp?1:0)+(temp?" °C":" RPM"):"No reading",mint,2);
+    const bool controls=hasSwitch(d);
+    if(!refreshing || d.imageChanged) {
+        lcd->fillRect(16,76,80,80,bg);
+        if(!d.detailImage ||
+           !lcd->drawJpg(d.detailImage.get(),d.detailBytes,16,76,80,80))
+            sidebarIcon(d,36,96);
+        publish(16,76,80,80);
+    }
+    if(!refreshing) {
+        lcd->setClipRect(102,77,controls?panel::switchLeft-112:680,82);
+        label(102,78,d.name,ink,3);
+        label(105,130,d.model,muted);
+        lcd->clearClipRect();
+        if(controls) {
+            box(panel::switchLeft,76,784-panel::switchLeft,350);
+            label(496,82,"Power control",ink,2);
+
         }
     }
-    if (!any) label(20,180,"No widgets enabled for this server",muted,2);
+    if(controls) {
+        static bool paintedEnabled=false;
+        const bool enabled=fresh() && !pendingPower;
+        if(!refreshing || paintedEnabled!=enabled) {
+            label(496,116,"Power on",enabled?ink:muted);
+            label(496,395,"Graceful shutdown",enabled?ink:muted);
+            publish(496,116,128,23); publish(496,395,158,23);
+            paintedEnabled=enabled;
+        }
+        static int paintedPose=-1;
+        const int pose=restingPose();
+        if(!refreshing || paintedPose!=pose) {
+            knifeSwitch(pose);
+            publish(panel::switchX,panel::switchY,panel::switchWidth,panel::switchHeight);
+            paintedPose=pose;
+        }
+    }
+    int y=164;
+    for (int i=0;i<d.widgets.count;++i) {
+        const auto kind=d.widgets.items[i];
+        if(kind==panel::Section::Controls) continue;
+        const bool power=kind==panel::Section::Power, temp=kind==panel::Section::Temperature;
+        const bool current=d.hasDetail;
+        const bool fan=kind==panel::Section::Fan;
+        const int height=fan?78:58;
+        if(!refreshing) {
+            box(16,y,controls?452:768,height);
+            label(34,y+height/2-11,power?"Power draw":temp?"Hottest temperature":"Fan Speeds",muted);
+        }
+        static String powerReading,temperature,lowest,highest;
+        const int x=controls?208:378, width=controls?248:378;
+        if(fan) {
+            const auto rpm=[&d,current](float speed) -> String {
+                return current && std::isfinite(speed)?String(speed,0)+" RPM":d.pending || (!current && requestActive)?"Loading":"No reading";
+            };
+            field(lowest,x,y+8,width,32,"Lowest: "+rpm(d.fan),mint,2);
+            field(highest,x,y+40,width,32,"Highest: "+rpm(d.fanMax),mint,2);
+        } else {
+            field(power?powerReading:temperature,x,y+14,width,33,power?watts(d.watts):current && std::isfinite(d.temperature)?
+                  String(d.temperature,1)+u8" \u00b0C":d.pending || (!current && requestActive)?"Loading":"No reading",mint,2);
+        }
+        y+=height+8;
+    }
+    if(controls) {
+        static String stateNote;
+        field(stateNote,660,86,114,23,d.powered>=0 && (!fresh() || (live && !d.confirmed))?"Last known":"",muted);
+    }
+    if(refreshing) return;
+    if(y==164 && !controls) label(20,180,"No widgets enabled for this server",muted,2);
     if(live && !strcmp(d.id,pendingDevice)) label(19,438,powerNotice,muted);
     else if(notice.length()) label(19,438,notice,muted);
-    else if(controlsTop(d)>=0) label(19,438,live?"Enter the panel PIN to confirm an action":"Demo actions only",muted);
+    else if(controls) label(19,438,live?"Enter the panel PIN to confirm an action":"Demo actions only",muted);
 }
 const char *keys[]={"1","2","3","4","5","6","7","8","9","Clear","0","Del"};
 #include "pin_change.inc"
 #include "screen_settings.inc"
 void keypad() {
     const auto &d=fleetData.devices[selected];
-    lcd.setClipRect(20,84,394,60);
+    lcd->setClipRect(20,84,394,60);
     label(20,89,d.name,ink,3);
-    lcd.clearClipRect();
+    lcd->clearClipRect();
     label(22,150,action[0]=='s'?"Graceful shutdown":"Power on",gold,2);
     label(22,190,d.id,muted);
     label(22,215,live?"Panel PIN (6-12 digits)":"Demo PIN 246810",muted);
@@ -212,14 +365,14 @@ void keypad() {
 }
 const char *healthText() {
     if(!live) return "DEMO DATA";
-    if(!connected) return hasData?"OFFLINE - LAST READINGS":"OFFLINE";
-    if(!fresh() && hasData) return "STALE - LAST READINGS";
+    if(!connected) return hasData?"Offline - last readings":"Offline";
+    if(!fresh() && hasData) return "Stale readings";
     switch(health) {
         case PanelStatus::Config: return "CHECK PANEL CONFIG";
         case PanelStatus::Clock: return "WAITING FOR CLOCK";
         case PanelStatus::Denied: return "ACCESS DENIED";
         case PanelStatus::Invalid: return "INVALID RESPONSE";
-        default: return fresh()?"LIVE":"WAITING FOR IBORK";
+        default: return fresh()?"":"WAITING FOR IBORK";
     }
 }
 void connectionIcons() {
@@ -227,44 +380,85 @@ void connectionIcons() {
     const uint32_t wifi=connected?active:unavailable;
     paintedLink=live && fresh();
     const uint32_t link=paintedLink?active:unavailable;
-    lcd.fillRect(520,10,110,49,bar);
-    for(int radius:{24,16,8}) lcd.fillArc(548,46,radius,radius-3,222,318,wifi);
-    lcd.fillCircle(548,46,3,wifi);
+    lcd->fillRect(520,10,110,49,bar);
+    for(int radius:{24,16,8}) lcd->fillArc(548,46,radius,radius-3,222,318,wifi);
+    lcd->fillCircle(548,46,3,wifi);
     for(int y:{19,36}) {
-        lcd.drawRoundRect(590,y,32,14,3,link);
-        lcd.fillCircle(597,y+7,2,link);
-        lcd.drawFastHLine(605,y+7,10,link);
+        lcd->drawRoundRect(590,y,32,14,3,link);
+        lcd->fillCircle(597,y+7,2,link);
+        lcd->drawFastHLine(605,y+7,10,link);
     }
+}
+void refreshStatus() {
+    lcd->fillRect(312,7,208,56,bar);
+    lcd->setClipRect(312,7,184,56);
+    label(315,24,healthText(),gold);
+    lcd->clearClipRect();
+    connectionIcons();
+    publish(312,7,318,56);
+}
+void pollSpinner() {
+    static int previous=-1;
+    const bool loading=live && connected && (requestActive || (fleetData.waiting && followups<3));
+    const int phase=loading?int((millis()/125)%8):-1;
+    if(!brightness || phase==previous) return;
+    previous=phase;
+    screen.fillRect(497,21,22,24,bar);
+    if(phase>=0) screen.fillArc(508,33,8,5,phase*45,phase*45+215,mint);
+}
+void refreshLink() {
+    refreshing=true;
+    if(buffered) lcd=&frame;
+    refreshStatus();
+    if(view==Detail) detail();
+    lcd=&screen; refreshing=false;
+}
+void drawColors() {
+    label(20,89,"Color mode",ink,3);
+    for(unsigned i=0;i<sizeof(palettes)/sizeof(*palettes);++i) {
+        const auto &palette=palettes[i];
+        const int x=panel::paletteX(i), y=panel::paletteY(i);
+        box(x,y,panel::paletteWidth,panel::paletteHeight,palette.surface);
+        lcd->drawRoundRect(x,y,panel::paletteWidth,panel::paletteHeight,10,i==theme?palette.accent:grid);
+        label(x+16,y+10,palette.name,ink,2);
+        if(i==theme) label(x+245,y+16,"Selected",ink);
+        int swatch=x+16;
+        for(auto color:{palette.background,palette.surface,palette.accent}) {
+            lcd->fillRoundRect(swatch,y+57,96,32,5,color);
+            lcd->drawRoundRect(swatch,y+57,96,32,5,muted);
+            swatch+=108;
+        }
+    }
+    label(20,424,themeNote,gold);
 }
 void draw() {
     gesture.cancel();
     if(!brightness) return;
+    if(buffered) lcd=&frame;
     static bool headerDrawn=false;
     if(!headerDrawn) {
-        lcd.fillRect(0,0,800,70,bar); lcd.drawFastHLine(0,69,800,grid);
+        lcd->fillRect(0,0,800,70,bar); lcd->drawFastHLine(0,69,800,grid);
         image(ibork,iborkEnd,8,1); image(finch,finchEnd,722,1);
         box(gearX,gearY,gearW,gearH);
         image(settings,settingsEnd,gearX+(gearW-36)/2,gearY+(gearH-36)/2);
+        label(82,17,"iBORK",ink,2);
         headerDrawn=true;
     }
-    lcd.fillRect(78,7,442,55,bar);
-    if(view!=Fleet && view!=Servers) lcd.fillRect(0,70,800,410,bg);
-    label(78,18,(view==Fleet || view==Servers || view==Detail)?"Home":"< Back",ink,2);
-    if(view==Fleet || view==Detail || view==Servers) {
-        box(210,10,128,48,view==Servers?grid:tile);
-        label(224,18,"Servers",ink,2);
+    lcd->fillRect(198,7,322,55,bar);
+    if(view!=Fleet && view!=Servers) lcd->fillRect(0,70,800,410,bg);
+    const bool selector=view==Fleet && !fleetData.home.contains(panel::Section::Servers);
+    if(view!=Fleet || selector) {
+        box(panel::navX,panel::navY,panel::navW,panel::navH);
+        label(panel::navX+12,19,selector?"Servers":"< Back",ink,2);
     }
-    const char *state=healthText();
-    lcd.setClipRect(344,7,176,56);
-    label(347,24,!live?"Demo data":!connected?"Offline":hasData && !fresh()?"Stale readings":fresh()?"Live":state,live && fresh()?mint:gold);
-    lcd.clearClipRect();
-    connectionIcons();
+    refreshStatus();
     switch(view) {
         case Fleet: case Servers: fleet(); break; case Detail: detail(); break;
         case Pin: keypad(); break; case Network: networkView(); break;
         case ChangePin: drawChangePin(); break;
         case Display: drawSchedule(); break;
         case DisplayPin: drawSchedulePin(); break;
+        case Colors: drawColors(); break;
         case Settings:
             label(20,89,"Settings",ink,3);
             box(16,172,766,72);
@@ -273,11 +467,17 @@ void draw() {
             box(16,264,766,72);
             label(36,281,"Change power PIN",live && connected?ink:muted,2);
             label(718,282,">",mint,2);
-            box(16,350,766,64);
+            box(16,350,373,64); box(405,350,377,64);
             label(36,365,"Display schedule",ink,2);
-            label(718,365,">",mint,2);
+            label(355,365,">",mint,2);
+            label(424,365,String("Color: ")+palettes[theme].name,ink,2);
+            label(748,365,">",mint,2);
             label(20,430,changePinMessage,muted);
             break;
+    }
+    if(buffered) {
+        lcd=&screen;
+        frame.pushSprite(0,0);
     }
 }
 void tap(int x,int y) {
@@ -285,23 +485,37 @@ void tap(int x,int y) {
         if(view==Settings) return;
         if(view==Network) forgetPass();
         if(view==ChangePin) cancelChangePin();
-        view=Settings; clearPin(); notice="";
+        view=Settings; themeNote=""; clearPin(); notice="";
     } else if(view==Settings && x>=16 && x<782 && y>=172 && y<244) {
         view=Network;
         if(joining) wifiScreen=Joining; else scanWiFi();
     } else if(view==Settings && x>=16 && x<782 && y>=264 && y<336) {
         openChangePin();
-    } else if(view==Settings && x>=16 && x<782 && y>=350 && y<414) {
+    } else if(view==Settings && x>=405 && x<782 && y>=350 && y<414) {
+        themeNote=""; view=Colors;
+    } else if(view==Settings && x>=16 && x<389 && y>=350 && y<414) {
         openSchedule();
-    } else if((view==Fleet || view==Detail || view==Servers) && x>=210 && x<338 && y>=10 && y<58) {
+    } else if(view==Fleet && !fleetData.home.contains(panel::Section::Servers) && panel::navHit(x,y)) {
         view=Servers; scrollOffset=0;
-    } else if(y<70 && x<210 && view!=Fleet) {
+    } else if(panel::navHit(x,y) && view!=Fleet) {
         if(view==Network && wifiScreen==Password) { forgetPass(); wifiScreen=Networks; }
         else if(view==Network) { forgetPass(); view=Settings; }
         else if(view==ChangePin) cancelChangePin();
-        else if(view==Display) view=Settings;
+        else if(view==Display || view==Colors) view=Settings;
         else if(view==DisplayPin) { clearPin(); view=Display; }
-        else { view=view==Pin?Detail:Fleet; scrollOffset=0; clearPin(); notice=""; }
+        else {
+            if(view==Pin) view=Detail;
+            else if(view==Detail && !fleetData.home.contains(panel::Section::Servers)) view=Servers;
+            else view=Fleet;
+            scrollOffset=0; clearPin(); notice="";
+        }
+    } else if(view==Colors) {
+        const int choice=panel::paletteAt(x,y);
+        if(choice<0 || unsigned(choice)==theme) return;
+        Preferences prefs;
+        if(prefs.begin("display",false) && prefs.putUChar("theme",choice)==1) {
+            setTheme(choice); themeNote="";
+        } else themeNote="Could not save color. Tap to retry.";
     } else if(view==Display || view==DisplayPin) {
         tapSchedule(x,y); return;
     } else if(view==ChangePin) {
@@ -311,12 +525,13 @@ void tap(int x,int y) {
     } else if(view==Fleet || view==Servers) {
         const int i=layout().deviceAt(x,y,scrollOffset,fleetData.count);
         if(i<0) return;
-        selected=i; view=Detail; detailPoll=DetailPoll::Opened; notice="";
+        selected=i; view=Detail; detailPoll=fleetData.artRevision?DetailPoll::Regular:DetailPoll::Opened; notice="";
     } else if(view==Detail && fresh() && !pendingPower) {
-        const int hit=panel::controlAt(x,y,controlsTop(fleetData.devices[selected]));
+        const int hit=hasSwitch(fleetData.devices[selected])?panel::controlAt(x,y):-1;
         if (hit<0) return;
+        animateSwitch(hit==0);
         action=hit==0?"on":"soft"; view=Pin; clearPin(); notice=locked?"Try again in 30 seconds":"";
-    } else if(view==Pin && fresh() && !locked && controlsTop(fleetData.devices[selected])>=0) {
+    } else if(view==Pin && fresh() && !locked && hasSwitch(fleetData.devices[selected])) {
         bool wasReady=pinLen>=6;
         if(editPinKey(x,y)) {
             drawPinInput();
@@ -345,7 +560,11 @@ void servicePanel() {
     PanelStatus status; PanelRequest kind;
     char id[33]{};
     if(view==Pin || view==Detail) strlcpy(id,fleetData.devices[selected].id,sizeof(id));
-    if(takePanelResult(status,kind,fleetData)) {
+    bool layoutChanged=false;
+    const bool hadData=hasData;
+    const auto priorHealth=health;
+    const auto priorView=view;
+    if(takePanelResult(status,kind,fleetData,layoutChanged)) {
         requestActive=false;
         if(kind==PanelRequest::ChangePin) finishChangePin(status);
         else if(kind==PanelRequest::Display) finishSchedule(status);
@@ -360,35 +579,70 @@ void servicePanel() {
                 if(panel::validDisplaySchedule(fleetData.displaySchedule))
                     rememberSchedule(fleetData.displaySchedule);
                 hasData=true; goodAt=millis()-uint32_t(min(86400.0,max(0.0,difftime(time(nullptr),fleetData.capturedAt)))*1000);
-                Serial.printf("iBORK panel GET OK devices=%d ip=%s\n",fleetData.count,WiFi.localIP().toString().c_str());
+                Serial.printf("iBORK panel GET OK devices=%d metered=%d rate=%.4f schedule=%u ip=%s\n",
+                              fleetData.count,fleetData.metered,fleetData.usdPerKwh,
+                              unsigned(fleetData.displaySchedule.revision),WiFi.localIP().toString().c_str());
+                if(fleetData.artRevision) {
+                    int power=0,art=0;
+                    for(int i=0;i<fleetData.count;++i) {
+                        power+=fleetData.devices[i].confirmed;
+                        art+=fleetData.devices[i].detailImage!=nullptr;
+                    }
+                    Serial.printf("iBORK preload: power=%d images=%d pending=%d rev=%lu\n",power,art,fleetData.waiting,(unsigned long)fleetData.artRevision);
+                }
                 if(id[0]) {
                     selected=panel::deviceIndex(fleetData,id);
                     if(selected<0) { view=Fleet; clearPin(); }
-                    else if(view==Pin && controlsTop(fleetData.devices[selected])<0) { view=Detail; clearPin(); }
-                    else if(view==Detail) detailPoll=panel::afterDetailRead(detailPoll,fleetData,fleetData.devices[selected]);
+                    else if(view==Pin && !hasSwitch(fleetData.devices[selected])) { view=Detail; clearPin(); }
+                    else if(view==Detail && !fleetData.artRevision) detailPoll=panel::afterDetailRead(detailPoll,fleetData,fleetData.devices[selected]);
                 }
                 scrollOffset=min(scrollOffset,layout().limit);
             } else Serial.printf("iBORK panel GET unavailable code=%u\n",unsigned(status));
         }
-        if(view!=Network) draw();
+        if(view!=Network) {
+            const bool dashboard=view==Fleet || view==Servers || view==Detail;
+            const bool statusChanged=priorHealth!=health || paintedLink!=(live && fresh());
+            if(kind!=PanelRequest::Read || layoutChanged || (!hadData && hasData) || priorView!=view ||
+               (!dashboard && statusChanged)) draw();
+            else if(brightness && dashboard) {
+                refreshing=true; refreshPixels=0;
+                if(buffered) lcd=&frame;
+                if(statusChanged) refreshStatus();
+                if(view==Detail) detail(); else fleet();
+                lcd=&screen; refreshing=false;
+                Serial.printf("iBORK refresh: %u pixels\n",refreshPixels);
+            }
+        }
     }
     if(view==Pin && !fresh()) { view=Detail; clearPin(); notice="Refresh required"; draw(); }
     const bool opening=view==Detail && detailPoll==DetailPoll::Opened;
-    const uint32_t interval=view==Detail && detailPoll==DetailPoll::Followup ? 3000U :
-                            health==PanelStatus::Clock ? 5000U : 30000U;
-    if(connected && !requestActive && view!=Pin && view!=ChangePin && view!=DisplayPin &&
-       (opening || millis()-checkedAt>=interval)) {
-        checkedAt=millis(); requestActive=startPanelRead(view==Detail?fleetData.devices[selected].id:nullptr);
-        detailPoll=opening && requestActive ? DetailPoll::FirstRead : DetailPoll::Regular;
+    const bool warming=health==PanelStatus::Ok && fleetData.waiting && followups<3;
+    const uint32_t interval=warming?2000U:view==Detail && detailPoll==DetailPoll::Followup?3000U:
+                            health==PanelStatus::Clock?5000U:15000U;
+    if(brightness && connected && !requestActive && (opening || millis()-checkedAt>=interval)) {
+        checkedAt=millis();
+        requestActive=startPanelRead(view==Detail?fleetData.devices[selected].id:nullptr,fleetData.artRevision);
+        if(requestActive) {
+            followups=warming?followups+1:0;
+            detailPoll=opening?DetailPoll::FirstRead:DetailPoll::Regular;
+        }
     }
 }
 }
 void setup() {
     Serial.begin(115200);
-    displayReady=psramFound() && lcd.begin();
+    displayReady=psramFound() && screen.begin();
     if(!displayReady) { Serial.println("iBORK: RGB/PSRAM initialization failed"); return; }
+    frame.setPsram(true);
+    frame.setColorDepth(16);
+    buffered=frame.createSprite(display_hw::widthPixels,display_hw::heightPixels)!=nullptr;
+    Serial.printf("iBORK frame buffer: %s\n",buffered?"ready":"direct drawing");
     canDim=display_hw::initBacklight();
     touchReady=display_hw::initTouch();
+    {
+        Preferences prefs;
+        if(prefs.begin("display",true)) setTheme(prefs.getUChar("theme",0));
+    }
     live=panelConfigured(); loadSchedule(); if(!live) demo();
 
 
@@ -408,6 +662,7 @@ void loop() {
     serviceWiFi();
     bool online=WiFi.status()==WL_CONNECTED && WiFi.localIP()!=IPAddress();
     if(connected!=online) {
+        const auto was=view;
         connected=online;
         if(live) { clearPin(); if(view==Pin) view=Detail; }
         if(connected) {
@@ -415,15 +670,20 @@ void loop() {
             startPanelClock();
             checkedAt=millis()-30000;
         } else health=PanelStatus::Network;
-        draw();
+        if(was==view && brightness && (view==Fleet || view==Servers || view==Detail)) {
+            refreshLink();
+        } else draw();
     }
     servicePanel();
     serviceChangePin();
     serviceScreen();
     if(locked && millis()-lockedAt>=30000) { locked=false; notice=""; if(view==Pin) draw(); }
     if(brightness && paintedLink!=(live && fresh())) {
-        draw();
+        if(view==Fleet || view==Servers || view==Detail) {
+            refreshLink();
+        } else draw();
     }
+    pollSpinner();
     if(touchReady) {
         uint16_t x=0,y=0;
         const auto event=display_hw::readTouch(x,y);

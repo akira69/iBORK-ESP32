@@ -4,11 +4,18 @@
 
 int main() {
     using namespace panel;
+    static_assert(!navHit(74,32) && !navHit(120,32) && navHit(198,10) && navHit(305,57) && !navHit(306,57));
+    for(int i=0;i<4;++i) {
+        const int x=paletteX(i), y=paletteY(i);
+        assert(paletteAt(x,y)==i && paletteAt(x+paletteWidth-1,y+paletteHeight-1)==i);
+        assert(paletteAt(x+paletteWidth,y)==-1 && paletteAt(x,y+paletteHeight)==-1);
+    }
+    assert(paletteAt(250,30)==-1 && paletteAt(750,479)==-1);
     const auto standard=homeLayout(defaultHome,16);
     const int limit=standard.limit;
-    assert(limit==48 && homeLayout(defaultHome,12).limit==0);
-    assert(standard.deviceAt(16,310,0,16)==0 && standard.deviceAt(210,310,0,16)==1);
-    assert(standard.deviceAt(204,310,0,16)==-1 && standard.deviceAt(16,360,0,16)==-1);
+    assert(limit==55 && homeLayout(defaultHome,12).limit==0);
+    assert(standard.deviceAt(16,317,0,16)==0 && standard.deviceAt(210,317,0,16)==1);
+    assert(standard.deviceAt(204,317,0,16)==-1 && standard.deviceAt(16,367,0,16)==-1);
     assert(standard.deviceAt(16,69,limit,16)==-1 && standard.deviceAt(16,480,limit,16)==-1);
     assert(standard.deviceAt(cardX(15),479,limit,16)==15 && standard.deviceAt(791,470,limit,16)==-1);
     assert(homeLayout({},16).count==0 && homeLayout({},16).deviceAt(16,80,0,16)==-1);
@@ -35,11 +42,11 @@ int main() {
             }
         }
     } while(std::next_permutation(order.items,order.items+4));
-    Sections widgets{4,{Section::Temperature,Section::Controls,Section::Fan,Section::Power}};
-    assert(widgetTop(widgets,true,Section::Controls)==230 && widgetTop(widgets,false,Section::Controls)<0);
-    assert(widgetTop(widgets,false,Section::Fan)==230 && widgetTop({},true,Section::Controls)<0);
-    assert(controlAt(16,230,230)==0 && controlAt(408,287,230)==1 && controlAt(407,230,230)<0);
-    assert(controlAt(392,230,230)<0 && controlAt(18,288,230)<0 && controlAt(18,230,-1)<0);
+    assert(controlAt(switchLeft,114)==0 && controlAt(783,263)==0);
+    assert(controlAt(switchX,264)<0 && controlAt(switchX,275)<0);
+    assert(controlAt(switchX,276)==1 && controlAt(783,425)==1);
+    assert(controlAt(784,114)<0 && controlAt(switchLeft-1,425)<0);
+    assert(controlAt(switchX,113)<0 && controlAt(switchX,426)<0);
     Gesture g;
     int offset = 0;
     auto frame = [&](Contact event, int x = 0, int y = 0) { return g.update(event,x,y,limit,offset); };

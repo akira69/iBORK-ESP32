@@ -45,8 +45,8 @@ inline PanelStatus responseStatus(PanelRequest kind,unsigned code) {
 }
 bool panelConfigured();
 void startPanelClock();
-bool startPanelRead(const char *detailId=nullptr);
+bool startPanelRead(const char *detailId,uint32_t revision);
 bool startPanelDisplay(const panel::DisplaySchedule &schedule,const char *pin);
 bool startPanelPower(const char *id, const char *action, const char *pin);
 bool startPanelPinChange(const char *currentPin,const char *newPin);
-bool takePanelResult(PanelStatus &status, PanelRequest &kind, PanelData &data);
+bool takePanelResult(PanelStatus &status, PanelRequest &kind, PanelData &data,bool &layoutChanged);

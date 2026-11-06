@@ -26,6 +26,12 @@ struct PanelDevice {
     std::unique_ptr<uint8_t, FreeSidebarImage> sidebarImage;
     uint16_t sidebarBytes;
     panel::Sections widgets;
+    bool metered;
+    std::unique_ptr<uint8_t,FreeSidebarImage> detailImage;
+    uint16_t detailBytes;
+    float temperature,fan,fanMax;
+    int8_t powered; // Unknown until a selected chassis reports on or off.
+    bool hasDetail,pending,confirmed,imageChanged;
 };
 struct PanelData {
     PanelDevice devices[16];
@@ -34,25 +40,67 @@ struct PanelData {
     bool canEditDisplay;
     panel::Sections home=panel::defaultHome;
     char detailId[33];
-    float temperature, fan;
+    uint32_t artRevision=0;
+    bool waiting=false;
     time_t capturedAt;
     double usdPerKwh=-1;
     float dayHours, monthHours;
     float day[24], month[30], dayKwh, monthKwh;
 };
 namespace panel {
-// Go JSON escaping can expand a full inventory with custom icons beyond 64 KiB.
-constexpr size_t maxSnapshotBytes=72*1024;
+// Cold preload includes up to sixteen 8 KiB JPEGs as base64 plus the 84 KiB legacy snapshot.
+constexpr size_t maxSnapshotBytes=256*1024;
+// Telemetry can be repainted in place while the visible arrangement and artwork match.
+inline bool samePanelLayout(const PanelData &a,const PanelData &b) {
+    if(a.count!=b.count || a.metered!=b.metered || a.usdPerKwh!=b.usdPerKwh ||
+       a.canEditDisplay!=b.canEditDisplay || a.displaySchedule.revision!=b.displaySchedule.revision ||
+       a.home.count!=b.home.count || memcmp(a.home.items,b.home.items,a.home.count)) return false;
+    const bool cached=a.artRevision && a.artRevision==b.artRevision;
+    for(int i=0;i<a.count;++i) {
+        const auto &x=a.devices[i], &y=b.devices[i];
+        if(strcmp(x.id,y.id) || strcmp(x.name,y.name) || strcmp(x.model,y.model) ||
+           x.controls!=y.controls || x.metered!=y.metered || x.widgets.count!=y.widgets.count ||
+           memcmp(x.widgets.items,y.widgets.items,x.widgets.count) || (!cached && (strcmp(x.sidebarLabel,y.sidebarLabel) ||
+           x.sidebarBytes!=y.sidebarBytes || (x.sidebarBytes && memcmp(x.sidebarImage.get(),y.sidebarImage.get(),x.sidebarBytes)))))
+            return false;
+    }
+    return true;
+}
 enum class DetailPoll { Regular, Opened, FirstRead, Followup };
 inline DetailPoll afterDetailRead(DetailPoll poll,const PanelData &data,const PanelDevice &selected) {
     if (poll!=DetailPoll::FirstRead) return poll;
-    const bool missing=(selected.widgets.contains(Section::Temperature) && !std::isfinite(data.temperature)) ||
-                       (selected.widgets.contains(Section::Fan) && !std::isfinite(data.fan));
+    const bool missing=(selected.controls && selected.widgets.contains(Section::Controls) && !selected.confirmed) ||
+                       (selected.widgets.contains(Section::Temperature) && !std::isfinite(selected.temperature)) ||
+                       (selected.widgets.contains(Section::Fan) && !std::isfinite(selected.fan));
     return missing && !strcmp(data.detailId,selected.id) ? DetailPoll::Followup : DetailPoll::Regular;
 }
 inline int deviceIndex(const PanelData &data,const char *id) {
     for (int i=0;i<data.count;++i) if (!strcmp(data.devices[i].id,id)) return i;
     return -1;
+}
+// Match by inventory ID: ordering can change while a panel request is in flight.
+inline void retainDetails(PanelData &next,PanelData &old) {
+    const bool cached=next.artRevision && next.artRevision==old.artRevision;
+    for(int i=0;i<next.count;++i) {
+        auto &d=next.devices[i];
+        const int index=deviceIndex(old,d.id);
+        if(index<0) {d.imageChanged=true; continue;}
+        auto &prior=old.devices[index];
+        if(cached) {
+            d.sidebarImage=std::move(prior.sidebarImage);
+            d.sidebarBytes=prior.sidebarBytes;
+            strcpy(d.sidebarLabel,prior.sidebarLabel);
+        }
+        if(cached || (!next.artRevision && !d.hasDetail)) {
+            d.detailImage=std::move(prior.detailImage);
+            d.detailBytes=prior.detailBytes;
+            d.imageChanged=false;
+        } else {
+            d.imageChanged=d.detailBytes!=prior.detailBytes ||
+                (d.detailBytes && memcmp(d.detailImage.get(),prior.detailImage.get(),d.detailBytes));
+        }
+        if(!d.confirmed && d.controls) d.powered=prior.powered;
+    }
 }
 inline bool validId(const char *id) {
     if (!id || !*id || strlen(id)>32 || *id=='-') return false;
@@ -91,6 +139,30 @@ inline DisplaySchedule decodeSchedule(const cJSON *source) {
     }
     return validDisplaySchedule(schedule) ? schedule : DisplaySchedule{};
 }
+inline uint16_t decodeImage(const char *image,size_t limit,std::unique_ptr<uint8_t,FreeSidebarImage> &output) {
+    output.reset();
+    if(!image) return 0;
+    const size_t size=strlen(image);
+    if (!size || size>4*((limit+2)/3) || size%4) return 0;
+    const size_t symbols=strspn(image,"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+    const size_t padding=size-symbols;
+    if (padding>2 || strspn(image+symbols,"=")!=padding) return 0;
+    const size_t bytes=size/4*3-padding;
+    if (bytes>limit) return 0;
+#ifdef ARDUINO_ARCH_ESP32
+    output.reset(static_cast<uint8_t *>(ps_malloc(bytes)));
+#else
+    output.reset(static_cast<uint8_t *>(std::malloc(bytes)));
+#endif
+    if (!output) return 0;
+    size_t written=0;
+    if (mbedtls_base64_decode(output.get(),bytes,&written,
+                              reinterpret_cast<const uint8_t *>(image),size) || written!=bytes) {
+        output.reset();
+        return 0;
+    }
+    return static_cast<uint16_t>(written);
+}
 inline void decodeSidebar(const cJSON *sidebar, PanelDevice &device) {
     device.sidebarLabel[0]=0;
     device.sidebarImage.reset();
@@ -110,26 +182,8 @@ inline void decodeSidebar(const cJSON *sidebar, PanelDevice &device) {
         for (int n=lead<0xe0 ? 1 : lead<0xf0 ? 2 : 3; n>0; --n)
             if ((*c++ & 0xc0)!=0x80) return;
     }
-    const size_t size=strlen(image);
-    if (!size || size>2732 || size%4) return;
-    const size_t symbols=strspn(image,"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
-    const size_t padding=size-symbols;
-    if (padding>2 || strspn(image+symbols,"=")!=padding) return;
-    const size_t bytes=size/4*3-padding;
-    if (bytes>2048) return;
-#ifdef ARDUINO_ARCH_ESP32
-    device.sidebarImage.reset(static_cast<uint8_t *>(ps_malloc(bytes)));
-#else
-    device.sidebarImage.reset(static_cast<uint8_t *>(std::malloc(bytes)));
-#endif
-    if (!device.sidebarImage) return;
-    size_t written=0;
-    if (mbedtls_base64_decode(device.sidebarImage.get(),bytes,&written,
-                              reinterpret_cast<const uint8_t *>(image),size) || written!=bytes) {
-        device.sidebarImage.reset();
-        return;
-    }
-    device.sidebarBytes=static_cast<uint16_t>(written);
+    device.sidebarBytes=decodeImage(image,2048,device.sidebarImage);
+    if(!device.sidebarBytes) return;
     strcpy(device.sidebarLabel,label);
 }
 inline Sections decodeSections(const cJSON *array, const Sections &legacy, bool home) {
@@ -172,7 +226,10 @@ inline bool decode(const cJSON *root, PanelData &data,time_t now,const char *req
     data.count=0;
     data.home=decodeSections(get("home"),defaultHome,true);
     data.detailId[0]=0;
-    data.temperature=data.fan=NAN;
+    auto revision=get("artRevision"), details=get("details");
+    if(revision && (!unsignedInteger(revision,UINT32_MAX) || !cJSON_IsObject(details))) return false;
+    data.artRevision=revision?static_cast<uint32_t>(revision->valuedouble):0;
+    data.waiting=false;
     for(auto p=devices->child;p;p=p->next) {
         auto field=[p](const char *key){return cJSON_GetObjectItemCaseSensitive(p,key);};
         const char *id=cJSON_GetStringValue(field("id")), *name=cJSON_GetStringValue(field("name")),
@@ -186,17 +243,31 @@ inline bool decode(const cJSON *root, PanelData &data,time_t now,const char *req
         snprintf(d.name,sizeof(d.name),"%s",name);
         snprintf(d.model,sizeof(d.model),"%s",model);
         d.controls=cJSON_IsTrue(field("controls"));
+        d.metered=cJSON_IsTrue(field("metered")) || d.watts>=0;
         d.widgets=decodeSections(field("widgets"),defaultWidgets,false);
         decodeSidebar(field("sidebar"),d);
-        if (requestedId && !strcmp(id,requestedId)) {
-            const auto *detail=get("detail");
-            const char *detailId=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(detail,"id"));
-            if (detailId && !strcmp(detailId,id)) {
-                strcpy(data.detailId,id);
-                data.temperature=sensorReading(detail,"temperature",-273.15);
-                data.fan=sensorReading(detail,"fan",0);
-            }
-        }
+        d.detailBytes=0; d.detailImage.reset();
+        d.temperature=d.fan=d.fanMax=NAN; d.powered=-1;
+        d.hasDetail=d.pending=d.confirmed=d.imageChanged=false;
+        const bool selected=requestedId && !strcmp(id,requestedId);
+        const auto *detail=data.artRevision?cJSON_GetObjectItemCaseSensitive(details,id):selected?get("detail"):nullptr;
+        const char *detailId=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(detail,"id"));
+        if(detailId && !strcmp(detailId,id)) {
+            d.hasDetail=true;
+            if(selected) strcpy(data.detailId,id);
+            const auto *art=cJSON_GetObjectItemCaseSensitive(detail,"image");
+            d.detailBytes=decodeImage(cJSON_GetStringValue(art),8192,d.detailImage);
+            if(data.artRevision && art && !d.detailBytes) return false;
+            const char *state=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(detail,"powerState"));
+            if(state && !strcmp(state,"on")) d.powered=1;
+            else if(state && !strcmp(state,"off")) d.powered=0;
+            d.confirmed=d.powered>=0;
+            d.pending=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(detail,"pending"));
+            data.waiting=data.waiting || d.pending;
+            d.temperature=sensorReading(detail,"temperature",-273.15);
+            d.fan=sensorReading(detail,"fan",0);
+            d.fanMax=sensorReading(detail,"fanMax",0);
+        } else if(data.artRevision) return false;
         ++data.count;
     }
     const auto *rate=get("usdPerKwh");

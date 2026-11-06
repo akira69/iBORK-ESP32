@@ -31,6 +31,7 @@ namespace {
 using namespace panel;
 constexpr uint32_t timeoutMs = 5000;
 char body[220], readDevice[33];
+uint32_t readRevision;
 PanelData nextData;
 PanelStatus result;
 PanelRequest operation;
@@ -101,7 +102,10 @@ PanelStatus request() {
     if(!tls.connect(hostname.c_str(),port,timeoutMs)) return PanelStatus::Network;
     tls.setTimeout(5);
     String headers=requestLine(operation);
-    if (operation==PanelRequest::Read && *readDevice) { headers+="?detail="; headers+=readDevice; }
+    if(operation==PanelRequest::Read) {
+        headers+="?preload="; headers+=String(readRevision);
+        if(*readDevice) { headers+="&detail="; headers+=readDevice; }
+    }
     headers+=" HTTP/1.1\r\nHost: "+origin.substring(8)+"\r\nConnection: close\r\nAuthorization: Bearer ";
     headers+=IBORK_PANEL_TOKEN;
     if(operation!=PanelRequest::Read) headers+="\r\nContent-Type: application/json\r\nContent-Length: "+String(strlen(body));
@@ -165,9 +169,10 @@ bool begin(PanelRequest kind) {
 }
 bool panelConfigured() { return *IBORK_PANEL_URL || *IBORK_PANEL_TOKEN || *IBORK_PANEL_CA; }
 void startPanelClock() { configTzTime(IBORK_PANEL_TZ,IBORK_PANEL_NTP,"time.cloudflare.com"); }
-bool startPanelRead(const char *detailId) {
+bool startPanelRead(const char *detailId,uint32_t revision) {
     if(busy || (detailId && !validId(detailId))) return false;
     strlcpy(readDevice,detailId?detailId:"",sizeof(readDevice));
+    readRevision=revision;
     return begin(PanelRequest::Read);
 }
 bool startPanelDisplay(const panel::DisplaySchedule &schedule,const char *pin) {
@@ -185,10 +190,14 @@ bool startPanelPinChange(const char *currentPin,const char *newPin) {
     snprintf(body,sizeof(body),"{\"currentPin\":\"%s\",\"newPin\":\"%s\"}",currentPin,newPin);
     return begin(PanelRequest::ChangePin);
 }
-bool takePanelResult(PanelStatus &status,PanelRequest &kind,PanelData &data) {
+bool takePanelResult(PanelStatus &status,PanelRequest &kind,PanelData &data,bool &layoutChanged) {
     if(!busy || !finished.load()) return false;
     status=result; kind=operation;
-    if (kind==PanelRequest::Read && status==PanelStatus::Ok) data=std::move(nextData);
+    if (kind==PanelRequest::Read && status==PanelStatus::Ok) {
+        layoutChanged=!panel::samePanelLayout(data,nextData);
+        panel::retainDetails(nextData,data);
+        data=std::move(nextData);
+    }
     finished.store(false); busy=false;
     return true;
 }

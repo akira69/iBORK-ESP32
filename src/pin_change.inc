@@ -6,7 +6,7 @@ uint32_t pinLastInput;
 void drawPinInput() {
     char mask[]="************";
     mask[pinLen]=0;
-    lcd.fillRect(20,245,390,52,bg);
+    lcd->fillRect(20,245,390,52,bg);
     label(22,249,mask,ink,2);
 }
 void drawPinSubmit(const char *caption,bool enabled) {

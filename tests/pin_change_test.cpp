@@ -13,7 +13,8 @@ int submissions;
 bool canSubmit=true;
 const char *keys[]={"1","2","3","4","5","6","7","8","9","Clear","0","Del"};
 constexpr int ink=1, muted=2, gold=3, bg=4, tile=5;
-struct { void fillRect(int,int,int,int,int) {} } lcd;
+struct { void fillRect(int,int,int,int,int) {} } screen;
+auto *lcd=&screen;
 void box(int,int,int,int,int=0) {}
 std::string enteredMask;
 void label(int x,int y,const char *value,int,int=1) { if(x==22 && y==249) enteredMask=value; }
@@ -46,7 +47,7 @@ int main() {
     assert(!strcmp(panel::requestLine(PanelRequest::Power),"POST /api/v1/panel/power"));
     assert(!strcmp(panel::requestLine(PanelRequest::ChangePin),"POST /api/v1/panel/pin"));
     using R=PanelRequest; using S=PanelStatus;
-    static_assert(panel::responseCapacity(R::Read)==72*1024,"snapshot limit");
+    static_assert(panel::responseCapacity(R::Read)==256*1024,"snapshot limit");
     for(auto kind:{R::Power,R::ChangePin,R::Display}) assert(panel::responseCapacity(kind)==1024);
     assert(panel::responseStatus(R::ChangePin,404)==S::Unsupported);
     assert(panel::responseStatus(R::ChangePin,405)==S::Unsupported);
