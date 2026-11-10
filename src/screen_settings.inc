@@ -1,15 +1,19 @@
 // Included with the other touchscreen views; both PIN prompts reuse the power keypad.
 panel::DisplaySchedule schedule=panel::defaultDisplaySchedule(), draft;
 panel::ScreenWake wake;
+panel::BrightnessSlider brightnessSlider;
 int periodIndex, brightness=100;
 bool canDim, savingSchedule, cacheSaved=true;
 const char *scheduleNote="";
+const char *displayNote="";
 const char *scheduleKey() { return live?"live-v1":"demo-v1"; }
 void loadSchedule() {
     Preferences prefs;
     panel::DisplaySchedule saved{};
-    if(prefs.begin("display",true) &&
-       prefs.getBytesLength(scheduleKey())==sizeof(saved) &&
+    if(!prefs.begin("display",true)) return;
+    const int manual=prefs.getUChar("brightness",0);
+    wake.manualBrightness=manual<=100?manual:0;
+    if(prefs.getBytesLength(scheduleKey())==sizeof(saved) &&
        prefs.getBytes(scheduleKey(),&saved,sizeof(saved))==sizeof(saved) &&
        panel::validDisplaySchedule(saved)) schedule=saved;
 }
@@ -30,18 +34,17 @@ void setScreenBrightness(int percent) {
 }
 void serviceScreen() {
     if(view==DisplayPin && (!connected || panel::elapsed(millis(),pinLastInput,60000))) {
-        clearPin(); view=Display; scheduleNote="PIN entry expired."; draw();
+        clearPin(); view=Schedule; scheduleNote="PIN entry expired."; draw();
     }
     static uint32_t checked;
     if(!panel::elapsed(millis(),checked,250)) return;
     checked=millis();
-    const bool awake=wake.awake(checked);
-    setScreenBrightness(!touchReady || awake?100:
-        panel::brightnessAt(schedule,panel::localMinuteOfDay(time(nullptr))));
+    setScreenBrightness(!touchReady?100:wake.level(
+        panel::brightnessAt(schedule,panel::localMinuteOfDay(time(nullptr))),checked));
 }
 bool wakeTouch(panel::Contact event) {
     const bool skip=wake.touch(event,brightness,millis());
-    if(event==panel::Contact::Down && brightness<100) {
+    if(event==panel::Contact::Down && brightness<100 && !wake.manualBrightness) {
         gesture={};
         setScreenBrightness(100);
     }
@@ -56,7 +59,7 @@ String stateText(int level) {
     return level==0?String("Screen off"):level==100?String("Normal"):String("Dim ")+level+"%";
 }
 void openSchedule() {
-    view=Display;
+    view=Schedule;
     if(savingSchedule) return;
     draft=schedule; periodIndex=0;
     scheduleNote="";
@@ -64,6 +67,49 @@ void openSchedule() {
 void scheduleButton(int x,int y,int w,const String &caption,bool selected=false) {
     box(x,y,w,48,selected?0x215448:tile);
     label(x+10,y+12,caption,selected?mint:ink);
+}
+void drawDisplay() {
+    label(18,78,"Display",ink,2);
+    label(20,132,"Brightness  "+String(wake.manualBrightness?wake.manualBrightness:brightness)+"%",ink,2);
+    const int level=wake.manualBrightness?wake.manualBrightness:brightness;
+    const int x=panel::BrightnessSlider::left+(constrain(level,1,100)-1)*510/99;
+    lcd->fillRoundRect(40,204,510,8,4,grid);
+    lcd->fillRoundRect(40,204,max(8,x-40),8,4,mint);
+    lcd->fillCircle(x,208,14,mint);
+    label(40,244,"1%",muted); label(508,244,"100%",muted);
+    scheduleButton(604,184,174,"Use schedule",!wake.manualBrightness);
+    label(20,280,wake.manualBrightness?"Manual brightness on this panel":"Following schedule; touch wakes for five minutes",muted);
+    label(20,328,"Schedule",ink,2);
+    label(20,368,"Four daily periods in panel local time",muted);
+    scheduleButton(604,344,174,"Edit schedule");
+    label(20,432,canDim?displayNote:"Backlight control unavailable.",gold);
+}
+void saveBrightness() {
+    Preferences prefs;
+    displayNote=prefs.begin("display",false) && prefs.putUChar("brightness",wake.manualBrightness)==1?
+        "":"Applied; local save failed. Adjust again to retry.";
+}
+bool slideBrightness(panel::Contact event,int x,int y) {
+    if(view!=Display || !canDim) { brightnessSlider={}; return false; }
+    const int previous=wake.manualBrightness;
+    if(!brightnessSlider.update(event,x,y,wake.manualBrightness)) return false;
+    gesture={};
+    if(event==panel::Contact::Up) { saveBrightness(); draw(); }
+    else if(previous!=wake.manualBrightness) {
+        displayNote="";
+        setScreenBrightness(wake.manualBrightness);
+        draw();
+    }
+    return true;
+}
+void tapDisplay(int x,int y) {
+    if(x>=604 && x<778 && y>=184 && y<232 && canDim) {
+        wake={};
+        saveBrightness();
+        setScreenBrightness(panel::brightnessAt(schedule,panel::localMinuteOfDay(time(nullptr))));
+    } else if(x>=604 && x<778 && y>=344 && y<392) openSchedule();
+    else return;
+    draw();
 }
 void drawSchedule() {
     label(18,78,"Display schedule",ink,2);
@@ -111,7 +157,7 @@ void tapSchedule(int x,int y) {
         } else if(x>=426 && x<759 && y>=369 && y<443 && pinLen>=6) {
             savingSchedule=!requestActive && startPanelDisplay(draft,pin);
             if(savingSchedule) requestActive=true;
-            clearPin(); view=Display;
+            clearPin(); view=Schedule;
             scheduleNote=savingSchedule?"Saving...":"Server busy. Try again.";
             draw();
         }

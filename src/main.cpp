@@ -17,7 +17,7 @@ uint8_t followups;
 unsigned refreshPixels;
 
 
-enum View { Fleet, Servers, Detail, Pin, Settings, Network, ChangePin, Display, DisplayPin, Colors };
+enum View { Fleet, Servers, Detail, Pin, Settings, Network, ChangePin, Display, Schedule, DisplayPin, Colors };
 View view=Fleet;
 constexpr uint32_t bar=0x101c29, grid=0x344959, teal=0x64efc4;
 struct Palette { const char *name; uint32_t background, surface, accent; };
@@ -456,7 +456,8 @@ void draw() {
         case Fleet: case Servers: fleet(); break; case Detail: detail(); break;
         case Pin: keypad(); break; case Network: networkView(); break;
         case ChangePin: drawChangePin(); break;
-        case Display: drawSchedule(); break;
+        case Display: drawDisplay(); break;
+        case Schedule: drawSchedule(); break;
         case DisplayPin: drawSchedulePin(); break;
         case Colors: drawColors(); break;
         case Settings:
@@ -468,7 +469,7 @@ void draw() {
             label(36,281,"Change power PIN",live && connected?ink:muted,2);
             label(718,282,">",mint,2);
             box(16,350,373,64); box(405,350,377,64);
-            label(36,365,"Display schedule",ink,2);
+            label(36,365,"Display",ink,2);
             label(355,365,">",mint,2);
             label(424,365,String("Color: ")+palettes[theme].name,ink,2);
             label(748,365,">",mint,2);
@@ -494,7 +495,7 @@ void tap(int x,int y) {
     } else if(view==Settings && x>=405 && x<782 && y>=350 && y<414) {
         themeNote=""; view=Colors;
     } else if(view==Settings && x>=16 && x<389 && y>=350 && y<414) {
-        openSchedule();
+        view=Display; displayNote="";
     } else if(view==Fleet && !fleetData.home.contains(panel::Section::Servers) && panel::navHit(x,y)) {
         view=Servers; scrollOffset=0;
     } else if(panel::navHit(x,y) && view!=Fleet) {
@@ -502,7 +503,8 @@ void tap(int x,int y) {
         else if(view==Network) { forgetPass(); view=Settings; }
         else if(view==ChangePin) cancelChangePin();
         else if(view==Display || view==Colors) view=Settings;
-        else if(view==DisplayPin) { clearPin(); view=Display; }
+        else if(view==Schedule) view=Display;
+        else if(view==DisplayPin) { clearPin(); view=Schedule; }
         else {
             if(view==Pin) view=Detail;
             else if(view==Detail && !fleetData.home.contains(panel::Section::Servers)) view=Servers;
@@ -516,7 +518,9 @@ void tap(int x,int y) {
         if(prefs.begin("display",false) && prefs.putUChar("theme",choice)==1) {
             setTheme(choice); themeNote="";
         } else themeNote="Could not save color. Tap to retry.";
-    } else if(view==Display || view==DisplayPin) {
+    } else if(view==Display) {
+        tapDisplay(x,y); return;
+    } else if(view==Schedule || view==DisplayPin) {
         tapSchedule(x,y); return;
     } else if(view==ChangePin) {
         tapChangePin(x,y); return;
@@ -687,7 +691,7 @@ void loop() {
     if(touchReady) {
         uint16_t x=0,y=0;
         const auto event=display_hw::readTouch(x,y);
-        if(event==panel::Contact::None || wakeTouch(event)) { delay(12); return; }
+        if(event==panel::Contact::None || wakeTouch(event) || slideBrightness(event,x,y)) { delay(12); return; }
         const int prior=scrollOffset;
         if(gesture.update(event,x,y,(view==Fleet || view==Servers)?layout().limit:0,scrollOffset))
             tap(gesture.x,gesture.y);
