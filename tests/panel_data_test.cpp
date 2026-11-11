@@ -52,6 +52,20 @@ void displayTests() {
 }
 int main() {
     displayTests();
+    assert(std::abs(panel::monthlyCostEstimate(16.70,197.2f)-60.97363)<0.0001);
+    assert(panel::monthlyCostEstimate(16.70,719.99f)>16.70);
+    assert(panel::monthlyCostEstimate(16.70,720)<0);
+    assert(panel::monthlyCostEstimate(16.70,0)<0);
+    assert(panel::monthlyCostEstimate(-1,197.2f)<0);
+    assert(panel::monthlyCostEstimate(0,197.2f)==0);
+    const auto varying=panel::chartWattRange({-1,184.25f,186.75f});
+    assert(varying.low==184 && varying.high==187);
+    const auto flat=panel::chartWattRange({230,230});
+    assert(flat.low==229 && flat.high==231);
+    const auto zero=panel::chartWattRange({0,0});
+    assert(zero.low==0 && zero.high==1);
+    const auto missing=panel::chartWattRange({-1,-1});
+    assert(missing.low==missing.high);
     const time_t now=1800000000;
     std::string readings="1";
     for(int i=1;i<24;++i) readings+=",null";

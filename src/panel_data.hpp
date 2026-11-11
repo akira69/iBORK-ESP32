@@ -48,6 +48,27 @@ struct PanelData {
     float day[24], month[30], dayKwh, monthKwh;
 };
 namespace panel {
+constexpr int monthWindowHours=30*24;
+inline double monthlyCostEstimate(double actualCost,float hours) {
+    return actualCost>=0 && hours>0 && hours<monthWindowHours ? actualCost*monthWindowHours/hours : -1;
+}
+struct WattRange { double low,high; };
+template<size_t N>
+inline WattRange chartWattRange(const float (&values)[N]) {
+    double low=std::numeric_limits<double>::infinity(), high=-1;
+    for(float value:values) {
+        if(value<0) continue;
+        if(value<low) low=value;
+        if(value>high) high=value;
+    }
+    if(high<0) return {};
+    low=std::floor(low); high=std::ceil(high);
+    if(low==high) {
+        if(low>0) --low;
+        ++high;
+    }
+    return {low,high};
+}
 // Cold preload includes up to sixteen 8 KiB JPEGs as base64 plus the 84 KiB legacy snapshot.
 constexpr size_t maxSnapshotBytes=256*1024;
 // Telemetry can be repainted in place while the visible arrangement and artwork match.
@@ -215,7 +236,7 @@ inline bool decode(const cJSON *root, PanelData &data,time_t now,const char *req
         !series(get("day"),data.day) || !series(get("month"),data.month) ||
         !number(get("dayKwh"),data.dayKwh) || !number(get("monthKwh"),data.monthKwh) ||
         !number(get("dayHours"),data.dayHours) || data.dayHours<0 || data.dayHours>24 ||
-        !number(get("monthHours"),data.monthHours) || data.monthHours<0 || data.monthHours>720) return false;
+        !number(get("monthHours"),data.monthHours) || data.monthHours<0 || data.monthHours>monthWindowHours) return false;
     auto when=get("capturedAt"), meters=get("metered"), total=get("total");
     if(!cJSON_IsNumber(when) || std::trunc(when->valuedouble)!=when->valuedouble ||
        when->valuedouble<1704067200 || when->valuedouble>double(now)+30 ||

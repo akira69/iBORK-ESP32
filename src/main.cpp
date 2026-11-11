@@ -44,6 +44,7 @@ unsigned failures;
 PanelData fleetData{};
 PanelStatus health=PanelStatus::Network;
 int selected, scrollOffset;
+bool detailFromServers;
 using panel::DetailPoll;
 DetailPoll detailPoll=DetailPoll::Regular;
 panel::Gesture gesture;
@@ -139,36 +140,71 @@ void field(String &previous,int x,int y,int w,int h,const String &value,uint32_t
     label(x,y,value,color,size);
     publish(x,y,w,h);
 }
+String costText(double cost) {
+    if(cost<0) return "--";
+    if(cost<9999.995) return "$"+String(cost,2);
+    char text[20];
+    snprintf(text,sizeof(text),"$%.1e",cost);
+    return text;
+}
 template<size_t N>
 void chart(const panel::SectionBox &b,const char *title,const float (&values)[N],float hours,float kwh,uint32_t accent) {
-    const int x=b.x, y=b.y, plotWidth=b.w-32;
+    const int x=b.x, y=b.y, plotX=x+100, plotWidth=b.w-116;
+    const int plotTop=y+76, plotBottom=y+b.h-56, plotHeight=plotBottom-plotTop;
+    const bool monthly=N==30;
+    const int costX=x+b.w-(monthly?260:168);
     static String cost,coverage;
-    static int8_t last[N];
+    static int16_t last[N];
+    static panel::WattRange lastRange{};
     if(!refreshing) {
         box(x,y,b.w,b.h);
         label(x+15,y+8,title,ink,2);
         label(x+16,y+45,"Avg W",muted);
+        label(plotX,plotBottom+12,monthly?"30d ago":"24h ago",muted);
+        label(x+b.w-50,plotBottom+12,"Now",muted);
+        if(monthly) label(costX,y+5,"Actual",muted);
     }
-    field(cost,x+b.w-168,y+11,156,34,hasData && kwh>=0 && fleetData.usdPerKwh>=0?
-          "$"+String(kwh*fleetData.usdPerKwh,2):"--",accent,2);
-    field(coverage,x+16,y+118,plotWidth,25,hasData?String(hours,1)+"/"+String(N==24?24:720)+" hours covered":"Waiting for readings",muted);
-    float peak=1;
-    for(float v:values) if(v>peak) peak=v;
-    int8_t heights[N]{};
-    for(size_t i=0;i<N;++i) heights[i]=hasData && values[i]>=0?lroundf(42*values[i]/peak):-1;
-    if(refreshing && !memcmp(heights,last,N)) return;
-    memcpy(last,heights,N);
-    if(refreshing) lcd->fillRect(x+14,y+67,plotWidth+5,48,tile);
-    for(int dy:{69,90,111}) lcd->drawFastHLine(x+16,y+dy,plotWidth,grid);
+    const double actualCost=hasData && kwh>=0 && fleetData.usdPerKwh>=0?kwh*fleetData.usdPerKwh:-1;
+    field(cost,costX,y+(monthly?25:11),monthly?124:156,34,costText(actualCost),accent,2);
+    if(monthly) {
+        static String forecastCaption,forecast;
+        const int forecastX=x+b.w-134;
+        const double estimate=panel::monthlyCostEstimate(actualCost,hours);
+        field(forecastCaption,forecastX,y+5,122,20,estimate>=0?"30-day est.":"",muted);
+        field(forecast,forecastX,y+25,122,34,estimate>=0?costText(estimate):String(),accent,2);
+    }
+    field(coverage,x+16,y+b.h-22,b.w-32,22,hasData?String(hours,1)+"/"+
+          String(monthly?panel::monthWindowHours:24)+" hours covered":"Waiting for readings",muted);
+    const auto range=hasData?panel::chartWattRange(values):panel::WattRange{};
+    const double span=range.high-range.low;
+    int16_t heights[N];
+    for(size_t i=0;i<N;++i)
+        heights[i]=span>0 && values[i]>=0?std::lround(plotHeight*(values[i]-range.low)/span):-1;
+    if(refreshing && lastRange.low==range.low && lastRange.high==range.high &&
+       !memcmp(heights,last,sizeof(heights))) return;
+    memcpy(last,heights,sizeof(heights));
+    lastRange=range;
+    const int plotClearY=plotTop-10, plotClearHeight=plotHeight+22;
+    if(refreshing) lcd->fillRect(x+12,plotClearY,b.w-24,plotClearHeight,tile);
+    for(int i=0;i<3;++i) {
+        const int tickY=plotBottom-i*plotHeight/2;
+        lcd->drawFastHLine(plotX,tickY,plotWidth+1,grid);
+        if(span>0) {
+            const double value=range.low+i*span/2;
+            char text[16];
+            snprintf(text,sizeof(text),value>=100000?"%.3g":value==std::floor(value)?"%.0f":"%.1f",value);
+            label(x+16,tickY-10,text,muted);
+        }
+    }
     int lastX=-1,lastY=0;
     for(size_t i=0;i<N;++i) {
         if(heights[i]<0) { lastX=-1; continue; }
-        int px=x+16+plotWidth*i/(N-1),py=y+111-heights[i];
+        int px=plotX+plotWidth*i/(N-1),py=plotBottom-heights[i];
         if(lastX>=0) lcd->drawWideLine(lastX,lastY,px,py,2,accent);
         else lcd->fillCircle(px,py,2,accent);
         lastX=px; lastY=py;
     }
-    publish(x+14,y+67,plotWidth+5,48);
+    publish(x+12,plotClearY,b.w-24,plotClearHeight);
 }
 void sidebarIcon(const PanelDevice &d,int x,int y) {
     constexpr int size=40;
@@ -177,10 +213,11 @@ void sidebarIcon(const PanelDevice &d,int x,int y) {
     String initials=String(d.name).substring(0,2);
     initials.toUpperCase(); label(x+size/5,y+size/4,initials,ink);
 }
-void fleetCards(int start,int top,int bottom) {
+void fleetCards(const panel::SectionBox &b,int top,int bottom) {
     for(int i=0;i<fleetData.count;++i) {
-        const int x=panel::cardX(i), y=panel::cardY(i,start);
-        if(y>=bottom || y+panel::cardHeight<=top) continue;
+        const int x=panel::cardX(i), y=panel::cardY(i,b.y);
+        if(y>=bottom || y>=b.y+b.h) break;
+        if(y+panel::cardHeight<=top) continue;
         const auto &s=fleetData.devices[i];
         static String readings[16];
         if(refreshing) {
@@ -197,10 +234,13 @@ void fleetCards(int start,int top,int bottom) {
         lcd->drawLine(x+panel::cardWidth-15,y+19,x+panel::cardWidth-9,y+25,muted);
         lcd->drawLine(x+panel::cardWidth-9,y+25,x+panel::cardWidth-15,y+31,muted);
     }
-    if(!refreshing && !fleetData.count) label(22,start+10,hasData?"No servers on this panel":"Waiting for iBORK",muted,2);
+    if(!refreshing && !fleetData.count) label(22,b.y+10,hasData?"No servers on this panel":"Waiting for iBORK",muted,2);
 }
 panel::HomeLayout layout() {
-    return panel::homeLayout(view==Servers?panel::selectorSections:fleetData.home,fleetData.count);
+    return panel::homeLayout(view==Servers?panel::selectorSections:fleetData.home,fleetData.count,view==Servers);
+}
+bool showServerSelector() {
+    return view==Fleet && (fleetData.count>panel::columns || !fleetData.home.contains(panel::Section::Servers));
 }
 void fleet(int top=panel::headerHeight,int bottom=panel::screenBottom) {
     const auto page=layout();
@@ -211,7 +251,7 @@ void fleet(int top=panel::headerHeight,int bottom=panel::screenBottom) {
         auto b=page.boxes[i];
         b.y-=scrollOffset;
         if (b.y>=bottom || b.y+b.h<=top) continue;
-        if (b.kind==panel::Section::Servers) fleetCards(b.y,top,bottom);
+        if (b.kind==panel::Section::Servers) fleetCards(b,top,bottom);
         else if (b.kind==panel::Section::Day) chart(b,"24 hours",fleetData.day,fleetData.dayHours,fleetData.dayKwh,mint);
         else if (b.kind==panel::Section::Month) chart(b,"30 days",fleetData.month,fleetData.monthHours,fleetData.monthKwh,gold);
         else {
@@ -446,7 +486,7 @@ void draw() {
     }
     lcd->fillRect(198,7,322,55,bar);
     if(view!=Fleet && view!=Servers) lcd->fillRect(0,70,800,410,bg);
-    const bool selector=view==Fleet && !fleetData.home.contains(panel::Section::Servers);
+    const bool selector=showServerSelector();
     if(view!=Fleet || selector) {
         box(panel::navX,panel::navY,panel::navW,panel::navH);
         label(panel::navX+12,19,selector?"Servers":"< Back",ink,2);
@@ -496,7 +536,7 @@ void tap(int x,int y) {
         themeNote=""; view=Colors;
     } else if(view==Settings && x>=16 && x<389 && y>=350 && y<414) {
         view=Display; displayNote="";
-    } else if(view==Fleet && !fleetData.home.contains(panel::Section::Servers) && panel::navHit(x,y)) {
+    } else if(panel::navHit(x,y) && showServerSelector()) {
         view=Servers; scrollOffset=0;
     } else if(panel::navHit(x,y) && view!=Fleet) {
         if(view==Network && wifiScreen==Password) { forgetPass(); wifiScreen=Networks; }
@@ -507,7 +547,7 @@ void tap(int x,int y) {
         else if(view==DisplayPin) { clearPin(); view=Schedule; }
         else {
             if(view==Pin) view=Detail;
-            else if(view==Detail && !fleetData.home.contains(panel::Section::Servers)) view=Servers;
+            else if(view==Detail && detailFromServers) view=Servers;
             else view=Fleet;
             scrollOffset=0; clearPin(); notice="";
         }
@@ -529,6 +569,7 @@ void tap(int x,int y) {
     } else if(view==Fleet || view==Servers) {
         const int i=layout().deviceAt(x,y,scrollOffset,fleetData.count);
         if(i<0) return;
+        detailFromServers=view==Servers;
         selected=i; view=Detail; detailPoll=fleetData.artRevision?DetailPoll::Regular:DetailPoll::Opened; notice="";
     } else if(view==Detail && fresh() && !pendingPower) {
         const int hit=hasSwitch(fleetData.devices[selected])?panel::controlAt(x,y):-1;
