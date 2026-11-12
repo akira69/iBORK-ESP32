@@ -4,6 +4,13 @@
 enum class PanelStatus { Ok, Config, Clock, Network, Invalid, Denied, Limited, Unauthorized, Unsupported, Rejected, Stale, Unavailable };
 enum class PanelRequest { Read, Power, ChangePin, Display };
 namespace panel {
+struct RequestDeadline {
+    uint32_t start;
+    uint32_t remaining(uint32_t now) const {
+        const uint32_t elapsed=now-start;
+        return elapsed<12000U?12000U-elapsed:0;
+    }
+};
 // Command endpoints return a short acknowledgement or error.
 constexpr size_t responseCapacity(PanelRequest kind) {
     return kind==PanelRequest::Read ? maxSnapshotBytes : 1024;
@@ -76,7 +83,7 @@ inline const char *readHealthText(PanelStatus status,bool hasData,bool recent) {
 }
 bool panelConfigured();
 void startPanelClock();
-bool startPanelRead(const char *detailId,uint32_t revision);
+bool startPanelRead(const char *detailId,uint32_t revision,bool charts);
 bool startPanelDisplay(const panel::DisplaySchedule &schedule,const char *pin);
 bool startPanelPower(const char *id, const char *action, const char *pin);
 bool startPanelPinChange(const char *currentPin,const char *newPin);

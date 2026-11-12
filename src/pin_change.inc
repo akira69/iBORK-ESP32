@@ -2,6 +2,7 @@
 char currentPin[13]{};
 const char *changePinMessage="";
 uint32_t pinLastInput;
+bool pinIdle() { return panel::elapsed(millis(),pinLastInput,60000); }
 
 void drawPinInput() {
     char mask[]="************";
@@ -76,7 +77,7 @@ bool tapChangePin(int x,int y) {
     return true;
 }
 void serviceChangePin() {
-    if(view==ChangePin && (!connected || panel::elapsed(millis(),pinLastInput,60000))) {
+    if(view==ChangePin && (!connected || pinIdle())) {
         cancelChangePin();
         changePinMessage=connected?"PIN entry timed out.":"PIN entry canceled while offline.";
         draw();

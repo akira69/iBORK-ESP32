@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include <atomic>
 #include <memory>
+#include <lwip/dns.h>
+#include <lwip/tcpip.h>
 #include <mbedtls/platform_util.h>
 #if __has_include("panel_local.h")
 #include "panel_local.h"
@@ -29,9 +31,9 @@
 
 namespace {
 using namespace panel;
-constexpr uint32_t timeoutMs = 5000;
 char body[220], readDevice[33];
 uint32_t readRevision;
+bool readCharts;
 PanelData nextData;
 PanelStatus result;
 PanelRequest operation;
@@ -39,6 +41,42 @@ std::atomic<bool> finished{false};
 TaskHandle_t worker;
 bool busy;
 using Json = std::unique_ptr<cJSON, decltype(&cJSON_Delete)>;
+
+// lwIP may deliver a DNS answer after our deadline. Keep its callback data alive.
+struct PanelDNS {
+    char host[254];
+    uint32_t address;
+    std::atomic<bool> pending{false};
+} dns;
+
+void resolved(const char *,const ip_addr_t *address,void *) {
+    dns.address=address?ip4_addr_get_u32(ip_2_ip4(address)):0;
+    dns.pending.store(false);
+}
+
+bool resolve(const char *host,IPAddress &address,const RequestDeadline &deadline) {
+    if(*IBORK_PANEL_IP) return address.fromString(IBORK_PANEL_IP);
+    if(address.fromString(host)) return true;
+    if(!dns.pending.load()) {
+        if(strlen(host)>=sizeof(dns.host)) return false;
+        strcpy(dns.host,host);
+        dns.pending.store(true);
+        if(tcpip_try_callback([](void *) {
+            ip_addr_t result;
+            const auto status=dns_gethostbyname_addrtype(dns.host,&result,resolved,nullptr,LWIP_DNS_ADDRTYPE_IPV4);
+            if(status!=ERR_INPROGRESS) resolved(nullptr,status==ERR_OK?&result:nullptr,nullptr);
+        },nullptr)!=ERR_OK) {
+            dns.pending.store(false);
+            return false;
+        }
+    }
+    while(dns.pending.load()) {
+        if(!deadline.remaining(millis())) return false;
+        delay(2);
+    }
+    address=dns.address;
+    return dns.address!=0;
+}
 
 // Arduino's shipped ESP-IDF disables MBEDTLS_HAVE_TIME_DATE. Enforce validity
 // for the presented chain and the configured anchor before sending the bearer.
@@ -56,10 +94,10 @@ bool current(const mbedtls_x509_crt *cert, uint64_t now) {
 }
 class PanelTls final : public WiFiClientSecure {
 public:
-    int connect(const char *host, uint16_t port, int32_t timeout) override {
-        _timeout=timeout;
-        IPAddress address;
-        if (*IBORK_PANEL_IP ? !address.fromString(IBORK_PANEL_IP) : !WiFi.hostByName(host,address)) return 0;
+    bool connectPanel(IPAddress address,const char *host,uint16_t port,uint32_t remaining) {
+        if(remaining<2) return false;
+        _timeout=min(3000U,remaining/2);
+        sslclient->handshake_timeout=min(5000U,remaining-uint32_t(_timeout));
         if (!WiFiClientSecure::connect(address,port,host,IBORK_PANEL_CA,nullptr,nullptr)) return 0;
         time_t now=time(nullptr);
         struct tm t{};
@@ -72,6 +110,12 @@ public:
         mbedtls_x509_crt_free(&anchor);
         if (!valid) stop();
         return valid;
+    }
+    bool send(const char *value,size_t size,const RequestDeadline &deadline) {
+        const auto remaining=deadline.remaining(millis());
+        if(!remaining) return false;
+        sslclient->socket_timeout=remaining;
+        return write(reinterpret_cast<const uint8_t *>(value),size)==size;
     }
 };
 struct Response {
@@ -90,6 +134,7 @@ PanelStatus transportFailure(const char *phase) {
     return PanelStatus::Network;
 }
 PanelStatus request() {
+    const RequestDeadline deadline{millis()};
     String origin=IBORK_PANEL_URL;
     if(origin.endsWith("/")) origin.remove(origin.length()-1);
     http_parser_url url{};
@@ -100,22 +145,26 @@ PanelStatus request() {
     if(time(nullptr)<1704067200) return PanelStatus::Clock;
     auto host=url.field_data[UF_HOST];
     PanelTls tls;
-    tls.setHandshakeTimeout(5);
     String hostname=origin.substring(host.off,host.off+host.len);
     const uint16_t port=(url.field_set & (1<<UF_PORT)) ? url.port : 443;
-    if(!tls.connect(hostname.c_str(),port,timeoutMs)) return transportFailure("connect");
-    tls.setTimeout(5);
+    IPAddress address;
+    if(!resolve(hostname.c_str(),address,deadline)) return transportFailure("dns");
+    const uint32_t resolvedAt=millis();
+    if(!tls.connectPanel(address,hostname.c_str(),port,deadline.remaining(millis()))) return transportFailure("connect");
+    const uint32_t connectedAt=millis();
     String headers=requestLine(operation);
     if(operation==PanelRequest::Read) {
         headers+="?preload="; headers+=String(readRevision);
         if(*readDevice) { headers+="&detail="; headers+=readDevice; }
+        if(!readCharts) headers+="&charts=0";
     }
     headers+=" HTTP/1.1\r\nHost: "+origin.substring(8)+"\r\nConnection: close\r\nAuthorization: Bearer ";
     headers+=IBORK_PANEL_TOKEN;
     if(operation!=PanelRequest::Read) headers+="\r\nContent-Type: application/json\r\nContent-Length: "+String(strlen(body));
     headers+="\r\n\r\n";
-    if(tls.print(headers)!=headers.length() ||
-       (operation!=PanelRequest::Read && tls.print(body)!=strlen(body))) return transportFailure("send");
+    if(!tls.send(headers.c_str(),headers.length(),deadline) ||
+       (operation!=PanelRequest::Read && !tls.send(body,strlen(body),deadline))) return transportFailure("send");
+    const uint32_t sentAt=millis();
     mbedtls_platform_zeroize(body,sizeof(body));
 
     const size_t capacity=responseCapacity(operation);
@@ -130,9 +179,8 @@ PanelStatus request() {
         static_cast<Response *>(p->data)->complete=true; http_parser_pause(p,1); return 0;
     };
     size_t received=0;
-    uint32_t started=millis();
     while(!response.complete) {
-        if(elapsed(millis(),started,timeoutMs)) return transportFailure("response timeout");
+        if(!deadline.remaining(millis())) return transportFailure("response timeout");
         char chunk[512];
         int n=tls.read(reinterpret_cast<uint8_t *>(chunk),sizeof(chunk));
         if(n<=0 && tls.connected()) { delay(5); continue; }
@@ -142,12 +190,17 @@ PanelStatus request() {
         http_parser_execute(&parser,&settings,chunk,count);
         if(!response.complete && (!count || HTTP_PARSER_ERRNO(&parser)!=HPE_OK)) return transportFailure("incomplete response");
     }
+    const uint32_t receivedAt=millis();
+    if(!deadline.remaining(receivedAt)) return transportFailure("response timeout");
     const PanelStatus status=responseStatus(operation,parser.status_code);
     if(status!=PanelStatus::Ok) return status;
     if(!shallowJson(buf.get(),response.used)) return PanelStatus::Invalid;
     buf.get()[response.used]=0;
     Json json(cJSON_ParseWithOpts(buf.get(),nullptr,true),cJSON_Delete);
-    if(!json || (operation!=PanelRequest::Read? !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json.get(),"ok")):!decode(json.get(),nextData,time(nullptr),readDevice))) return PanelStatus::Invalid;
+    if(!json || (operation!=PanelRequest::Read? !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json.get(),"ok")):!decode(json.get(),nextData,time(nullptr),readDevice,!readCharts))) return PanelStatus::Invalid;
+    if(operation==PanelRequest::Read) Serial.printf("iBORK panel timing: dns %lu ms, connect %lu ms, send %lu ms, receive %lu ms, %u bytes\n",
+        static_cast<unsigned long>(resolvedAt-deadline.start),static_cast<unsigned long>(connectedAt-resolvedAt),
+        static_cast<unsigned long>(sentAt-connectedAt),static_cast<unsigned long>(receivedAt-sentAt),unsigned(response.used));
     return PanelStatus::Ok;
 }
 void run(void *) {
@@ -173,10 +226,11 @@ bool begin(PanelRequest kind) {
 }
 bool panelConfigured() { return *IBORK_PANEL_URL || *IBORK_PANEL_TOKEN || *IBORK_PANEL_CA; }
 void startPanelClock() { configTzTime(IBORK_PANEL_TZ,IBORK_PANEL_NTP,"time.cloudflare.com"); }
-bool startPanelRead(const char *detailId,uint32_t revision) {
+bool startPanelRead(const char *detailId,uint32_t revision,bool charts) {
     if(busy || (detailId && !validId(detailId))) return false;
     strlcpy(readDevice,detailId?detailId:"",sizeof(readDevice));
     readRevision=revision;
+    readCharts=charts;
     return begin(PanelRequest::Read);
 }
 bool startPanelDisplay(const panel::DisplaySchedule &schedule,const char *pin) {

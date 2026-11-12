@@ -29,11 +29,17 @@ void setScreenBrightness(int percent) {
     if(!canDim || brightness==percent) return;
     const bool wasOff=brightness==0;
     brightness=percent;
+    if(!brightness) {
+        if(view==ChangePin) cancelChangePin();
+        else if(view==Pin || view==DisplayPin) {
+            clearPin(); view=view==Pin?Detail:Schedule;
+        }
+    }
     if(wasOff) { checkedAt=millis()-30000; draw(); }
     display_hw::setBrightness(percent);
 }
 void serviceScreen() {
-    if(view==DisplayPin && (!connected || panel::elapsed(millis(),pinLastInput,60000))) {
+    if(view==DisplayPin && (!connected || pinIdle())) {
         clearPin(); view=Schedule; scheduleNote="PIN entry expired."; draw();
     }
     static uint32_t checked;

@@ -42,7 +42,7 @@ struct PanelData {
     char detailId[33];
     uint32_t artRevision=0;
     bool waiting=false;
-    time_t capturedAt;
+    time_t capturedAt, chartAt;
     double usdPerKwh=-1;
     float dayHours, monthHours;
     float day[96], month[120], dayKwh, monthKwh;
@@ -101,6 +101,20 @@ inline int deviceIndex(const PanelData &data,const char *id) {
 }
 // Match by inventory ID: ordering can change while a panel request is in flight.
 inline void retainDetails(PanelData &next,PanelData &old) {
+    if(!next.chartAt && old.chartAt && next.count==old.count) {
+        bool sameFleet=true;
+        for(int i=0;i<next.count;++i) {
+            const int prior=deviceIndex(old,next.devices[i].id);
+            if(prior<0 || next.devices[i].metered!=old.devices[prior].metered) sameFleet=false;
+        }
+        if(sameFleet) {
+            memcpy(next.day,old.day,sizeof(next.day));
+            memcpy(next.month,old.month,sizeof(next.month));
+            next.dayHours=old.dayHours; next.monthHours=old.monthHours;
+            next.dayKwh=old.dayKwh; next.monthKwh=old.monthKwh;
+            next.chartAt=old.chartAt;
+        }
+    }
     const bool cached=next.artRevision && next.artRevision==old.artRevision;
     for(int i=0;i<next.count;++i) {
         auto &d=next.devices[i];
@@ -120,7 +134,7 @@ inline void retainDetails(PanelData &next,PanelData &old) {
             d.imageChanged=d.detailBytes!=prior.detailBytes ||
                 (d.detailBytes && memcmp(d.detailImage.get(),prior.detailImage.get(),d.detailBytes));
         }
-        if(!d.confirmed && d.controls) d.powered=prior.powered;
+        if(d.powered<0 && d.controls) d.powered=prior.powered;
     }
 }
 inline bool validId(const char *id) {
@@ -229,21 +243,23 @@ inline float sensorReading(const cJSON *detail,const char *key,double minimum) {
     return cJSON_IsNumber(item) && item->valuedouble>=minimum && item->valuedouble<=1e12 ?
            static_cast<float>(item->valuedouble) : NAN;
 }
-inline bool decode(const cJSON *root, PanelData &data,time_t now,const char *requestedId=nullptr) {
+inline bool decode(const cJSON *root, PanelData &data,time_t now,const char *requestedId=nullptr,bool allowCompact=false) {
     auto get=[root](const char *key){ return cJSON_GetObjectItemCaseSensitive(root,key); };
     auto devices=get("devices");
-    if (!cJSON_IsArray(devices) || cJSON_GetArraySize(devices)>16 ||
-        !series(get("day"),data.day) || !series(get("month"),data.month) ||
+    if (!cJSON_IsArray(devices) || cJSON_GetArraySize(devices)>16) return false;
+    const bool charts=get("day") || get("month") || get("dayKwh") || get("monthKwh") || get("dayHours") || get("monthHours");
+    if (!charts && !allowCompact) return false;
+    if (charts && (!series(get("day"),data.day) || !series(get("month"),data.month) ||
         !number(get("dayKwh"),data.dayKwh) || !number(get("monthKwh"),data.monthKwh) ||
         !number(get("dayHours"),data.dayHours) || data.dayHours<0 || data.dayHours>24 ||
-        !number(get("monthHours"),data.monthHours) || data.monthHours<0 || data.monthHours>monthWindowHours) return false;
+        !number(get("monthHours"),data.monthHours) || data.monthHours<0 || data.monthHours>monthWindowHours)) return false;
     auto when=get("capturedAt"), meters=get("metered"), total=get("total");
     if(!cJSON_IsNumber(when) || std::trunc(when->valuedouble)!=when->valuedouble ||
        when->valuedouble<1704067200 || when->valuedouble>double(now)+30 ||
        when->valuedouble>double(std::numeric_limits<time_t>::max()) ||
        !cJSON_IsNumber(total) || total->valuedouble!=cJSON_GetArraySize(devices) ||
        !cJSON_IsNumber(meters) || meters->valueint!=meters->valuedouble || meters->valueint<0 || meters->valueint>total->valueint) return false;
-    data.capturedAt=time_t(when->valuedouble); data.metered=meters->valueint;
+    data.capturedAt=time_t(when->valuedouble); data.chartAt=charts?data.capturedAt:0; data.metered=meters->valueint;
     data.count=0;
     data.home=decodeSections(get("home"),defaultHome,true);
     data.detailId[0]=0;
@@ -278,11 +294,10 @@ inline bool decode(const cJSON *root, PanelData &data,time_t now,const char *req
             if(selected) strcpy(data.detailId,id);
             const auto *art=cJSON_GetObjectItemCaseSensitive(detail,"image");
             d.detailBytes=decodeImage(cJSON_GetStringValue(art),8192,d.detailImage);
-            if(data.artRevision && art && !d.detailBytes) return false;
             const char *state=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(detail,"powerState"));
             if(state && !strcmp(state,"on")) d.powered=1;
             else if(state && !strcmp(state,"off")) d.powered=0;
-            d.confirmed=d.powered>=0;
+            d.confirmed=d.powered>=0 && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(detail,"powerFresh"));
             d.pending=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(detail,"pending"));
             data.waiting=data.waiting || d.pending;
             d.temperature=sensorReading(detail,"temperature",-273.15);

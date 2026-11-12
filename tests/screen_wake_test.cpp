@@ -5,6 +5,15 @@
 
 int main() {
     using namespace panel;
+    TouchRetry touch;
+    const uint32_t faultAt=std::numeric_limits<uint32_t>::max()-100;
+    assert(!touch.failed(true,faultAt-4));
+    assert(!touch.failed(true,faultAt-3));
+    assert(!touch.failed(false,faultAt-2));
+    assert(!touch.failed(true,faultAt-2));
+    assert(!touch.failed(true,faultAt-1));
+    assert(touch.failed(true,faultAt));
+    assert(!touch.due(faultAt+4999) && touch.due(faultAt+5000) && !touch.due(faultAt+5001));
     ScreenWake manual;
     manual.manualBrightness=25;
     assert(!manual.touch(Contact::Down,25,1));

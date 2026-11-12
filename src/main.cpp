@@ -15,6 +15,8 @@ lgfx::LovyanGFX *lcd=&screen;
 bool buffered, refreshing;
 uint8_t followups;
 unsigned refreshPixels;
+uint32_t chartUs, publishUs;
+panel::TouchRetry touchRetry;
 
 
 enum View { Fleet, Servers, Detail, Pin, Settings, Network, ChangePin, Display, Schedule, DisplayPin, Colors };
@@ -62,7 +64,7 @@ bool fresh() { return !live || (connected && health==PanelStatus::Ok && recentRe
 #define ART(name,ext) extern const uint8_t name[] asm("_binary_art_" #name "_" #ext "_start"); \
                   extern const uint8_t name##End[] asm("_binary_art_" #name "_" #ext "_end")
 ART(ibork,jpg); ART(finch,jpg); ART(settings,jpg); ART(transmission,png);
-ART(knife0,png); ART(knife1,png); ART(knife2,png); ART(knife3,png); ART(knife4,png);
+ART(knife0,png); ART(knife4,png);
 void label(int x, int y, const String &value, uint32_t color = ink, int size = 1) {
     extern const uint8_t small[] asm("_binary_fonts_panel16_vlw_start");
     extern const uint8_t medium[] asm("_binary_fonts_panel25_vlw_start");
@@ -120,6 +122,7 @@ void publish(int x,int y,int w,int h) {
     }
     if(h<=0) return;
     if(!buffered) {refreshPixels+=w*h; return;}
+    const uint32_t started=micros();
     // Compare in internal RAM and send only changed runs to the live RGB framebuffer.
     static lgfx::rgb565_t before[display_hw::widthPixels], after[display_hw::widthPixels];
     for(int row=y;row<y+h;++row) {
@@ -136,6 +139,7 @@ void publish(int x,int y,int w,int h) {
         }
         if((row-y)%16==15) delay(1);
     }
+    publishUs+=micros()-started;
 }
 void field(String &previous,int x,int y,int w,int h,const String &value,uint32_t color,int size=1) {
     if(refreshing && previous==value) return;
@@ -156,6 +160,7 @@ void chart(const panel::SectionBox &b,const char *title,const float (&values)[N]
     const int x=b.x, y=b.y, plotX=x+100, plotWidth=b.w-116;
     const int plotTop=y+76, plotBottom=y+b.h-56, plotHeight=plotBottom-plotTop;
     const bool monthly=b.kind==panel::Section::Month;
+    const bool hasHistory=hasData && (!live || fleetData.chartAt);
     const int costX=x+b.w-(monthly?260:168);
     static String cost,coverage;
     static int16_t last[N];
@@ -168,7 +173,7 @@ void chart(const panel::SectionBox &b,const char *title,const float (&values)[N]
         label(x+b.w-50,plotBottom+12,"Now",muted);
         if(monthly) label(costX,y+5,"Actual",muted);
     }
-    const double actualCost=hasData && kwh>=0 && fleetData.usdPerKwh>=0?kwh*fleetData.usdPerKwh:-1;
+    const double actualCost=hasHistory && kwh>=0 && fleetData.usdPerKwh>=0?kwh*fleetData.usdPerKwh:-1;
     field(cost,costX,y+(monthly?25:11),monthly?124:156,34,costText(actualCost),accent,2);
     if(monthly) {
         static String forecastCaption,forecast;
@@ -177,15 +182,16 @@ void chart(const panel::SectionBox &b,const char *title,const float (&values)[N]
         field(forecastCaption,forecastX,y+5,122,20,estimate>=0?"30-day est.":"",muted);
         field(forecast,forecastX,y+25,122,34,estimate>=0?costText(estimate):String(),accent,2);
     }
-    field(coverage,x+16,y+b.h-22,b.w-32,22,hasData?String(hours,1)+"/"+
+    field(coverage,x+16,y+b.h-22,b.w-32,22,hasHistory?String(hours,1)+"/"+
           String(monthly?panel::monthWindowHours:24)+" hours covered":"Waiting for readings",muted);
-    const auto range=hasData?panel::chartWattRange(values):panel::WattRange{};
+    const uint32_t started=micros();
+    const auto range=hasHistory?panel::chartWattRange(values):panel::WattRange{};
     const double span=range.high-range.low;
     int16_t heights[N];
     for(size_t i=0;i<N;++i)
         heights[i]=span>0 && values[i]>=0?std::lround(plotHeight*(values[i]-range.low)/span):-1;
     if(refreshing && lastRange.low==range.low && lastRange.high==range.high &&
-       !memcmp(heights,last,sizeof(heights))) return;
+       !memcmp(heights,last,sizeof(heights))) { chartUs+=micros()-started; return; }
     memcpy(last,heights,sizeof(heights));
     lastRange=range;
     const int plotClearY=plotTop-10, plotClearHeight=plotHeight+22;
@@ -208,6 +214,7 @@ void chart(const panel::SectionBox &b,const char *title,const float (&values)[N]
         else lcd->fillCircle(px,py,1,accent);
         lastX=px; lastY=py;
     }
+    chartUs+=micros()-started;
     publish(x+12,plotClearY,b.w-24,plotClearHeight);
 }
 void sidebarIcon(const PanelDevice &d,int x,int y) {
@@ -291,34 +298,13 @@ void scrollFleet(int previous) {
 bool hasSwitch(const PanelDevice &d) {
     return d.controls && d.widgets.contains(panel::Section::Controls);
 }
-int restingPose() {
-    if(!live) return fleetData.devices[selected].watts>5?4:0;
-    const auto state=fleetData.devices[selected].powered;
-    return state<0?-1:state?4:0;
-}
 void knifeSwitch(int pose) {
-    static const uint8_t *const starts[]={knife0,knife1,knife2,knife3,knife4};
-    static const uint8_t *const ends[]={knife0End,knife1End,knife2End,knife3End,knife4End};
     lcd->fillRect(panel::switchX,panel::switchY,panel::switchWidth,panel::switchHeight,tile);
     if(pose<0) label(panel::switchX+44,panel::switchY+112,connected?"Reading chassis state":"Offline",muted);
-    else lcd->drawPng(starts[pose],assetSize(starts[pose],ends[pose]),panel::switchX,panel::switchY);
-}
-void animateSwitch(bool powerOn) {
-    const int target=powerOn?4:0;
-    int pose=restingPose();
-    if(pose<0) pose=target;
-    if(buffered) lcd=&frame;
-    do {
-        if(pose!=target) pose+=powerOn?1:-1;
-        knifeSwitch(pose);
-        if(buffered) {
-            screen.setClipRect(panel::switchX,panel::switchY,panel::switchWidth,panel::switchHeight);
-            frame.pushSprite(0,0);
-            screen.clearClipRect();
-        }
-        delay(pose==target?220:25);
-    } while(pose!=target);
-    lcd=&screen;
+    else {
+        const auto *start=pose?knife4:knife0, *end=pose?knife4End:knife0End;
+        lcd->drawPng(start,assetSize(start,end),panel::switchX,panel::switchY);
+    }
 }
 void detail() {
     const auto &d=fleetData.devices[selected];
@@ -351,7 +337,7 @@ void detail() {
             paintedEnabled=enabled;
         }
         static int paintedPose=-1;
-        const int pose=restingPose();
+        const int pose=live?d.powered:d.watts>5;
         if(!refreshing || paintedPose!=pose) {
             knifeSwitch(pose);
             publish(panel::switchX,panel::switchY,panel::switchWidth,panel::switchHeight);
@@ -573,15 +559,15 @@ void tap(int x,int y) {
         const int i=layout().deviceAt(x,y,scrollOffset,fleetData.count);
         if(i<0) return;
         detailFromServers=view==Servers;
-        selected=i; view=Detail; detailPoll=fleetData.artRevision?DetailPoll::Regular:DetailPoll::Opened; notice="";
+        selected=i; view=Detail; detailPoll=DetailPoll::Opened; followups=0; notice="";
     } else if(view==Detail && fresh() && !pendingPower) {
         const int hit=hasSwitch(fleetData.devices[selected])?panel::controlAt(x,y):-1;
         if (hit<0) return;
-        animateSwitch(hit==0);
-        action=hit==0?"on":"soft"; view=Pin; clearPin(); notice=locked?"Try again in 30 seconds":"";
+        action=hit==0?"on":"soft"; view=Pin; clearPin(); pinLastInput=millis(); notice=locked?"Try again in 30 seconds":"";
     } else if(view==Pin && fresh() && !locked && hasSwitch(fleetData.devices[selected])) {
         bool wasReady=pinLen>=6;
         if(editPinKey(x,y)) {
+            pinLastInput=millis();
             drawPinInput();
             if(wasReady!=(pinLen>=6)) drawPinSubmit("Confirm action",pinLen>=6);
             return;
@@ -610,6 +596,7 @@ void servicePanel() {
     if(view==Pin || view==Detail) strlcpy(id,fleetData.devices[selected].id,sizeof(id));
     bool layoutChanged=false;
     const bool hadData=hasData;
+    const auto priorChartAt=fleetData.chartAt;
     const auto priorView=view;
     if(takePanelResult(status,kind,fleetData,layoutChanged)) {
         requestActive=false;
@@ -627,13 +614,12 @@ void servicePanel() {
                 WiFi.reconnect();
             }
             if(status==PanelStatus::Ok) {
-                if(!fleetData.waiting) followups=0;
                 if(panel::validDisplaySchedule(fleetData.displaySchedule))
                     rememberSchedule(fleetData.displaySchedule);
                 hasData=true; goodAt=millis()-uint32_t(min(86400.0,max(0.0,difftime(time(nullptr),fleetData.capturedAt)))*1000);
-                Serial.printf("iBORK panel GET OK devices=%d metered=%d rate=%.4f schedule=%u ip=%s\n",
+                Serial.printf("iBORK panel GET OK devices=%d metered=%d rate=%.4f schedule=%u charts=%s ip=%s\n",
                               fleetData.count,fleetData.metered,fleetData.usdPerKwh,
-                              unsigned(fleetData.displaySchedule.revision),WiFi.localIP().toString().c_str());
+                              unsigned(fleetData.displaySchedule.revision),priorChartAt!=fleetData.chartAt?"new":"cached",WiFi.localIP().toString().c_str());
                 if(fleetData.artRevision) {
                     int power=0,art=0;
                     for(int i=0;i<fleetData.count;++i) {
@@ -648,6 +634,7 @@ void servicePanel() {
                     else if(view==Pin && !hasSwitch(fleetData.devices[selected])) { view=Detail; clearPin(); }
                     else if(view==Detail && !fleetData.artRevision) detailPoll=panel::afterDetailRead(detailPoll,fleetData,fleetData.devices[selected]);
                 }
+                if(view!=Detail || !fleetData.devices[selected].pending) followups=0;
                 scrollOffset=min(scrollOffset,layout().limit);
             } else Serial.printf("iBORK panel GET unavailable code=%u\n",unsigned(status));
         }
@@ -657,23 +644,28 @@ void servicePanel() {
             if(kind!=PanelRequest::Read || layoutChanged || (!hadData && hasData) || priorView!=view ||
                (!dashboard && statusChanged)) draw();
             else if(brightness && dashboard) {
-                refreshing=true; refreshPixels=0;
+                refreshing=true; refreshPixels=chartUs=publishUs=0;
                 if(buffered) lcd=&frame;
                 if(statusChanged) refreshStatus();
                 if(view==Detail) detail(); else if(status==PanelStatus::Ok) fleet();
                 lcd=&screen; refreshing=false;
-                Serial.printf("iBORK refresh: %u pixels\n",refreshPixels);
+                Serial.printf("iBORK refresh: %u pixels, charts %lu us, publish %lu us\n",refreshPixels,
+                              static_cast<unsigned long>(chartUs),static_cast<unsigned long>(publishUs));
             }
         }
     }
-    if(view==Pin && !fresh()) { view=Detail; clearPin(); notice="Refresh required"; draw(); }
+    if(view==Pin && (!fresh() || pinIdle())) {
+        view=Detail; clearPin(); notice=fresh()?"PIN entry expired.":"Refresh required"; draw();
+    }
     const bool opening=view==Detail && detailPoll==DetailPoll::Opened;
-    const bool warming=health==PanelStatus::Ok && fleetData.waiting && followups<3;
+    const bool warming=health==PanelStatus::Ok && view==Detail && fleetData.devices[selected].pending && followups<3;
     const uint32_t interval=warming?2000U:health==PanelStatus::Ok && view==Detail && detailPoll==DetailPoll::Followup?3000U:
                             health==PanelStatus::Clock?5000U:readRetry.delayMs();
-    if(brightness && connected && view!=Network && !requestActive && (opening || millis()-checkedAt>=interval)) {
+    const bool enteringPin=view==Pin || view==ChangePin || view==DisplayPin;
+    if(brightness && connected && view!=Network && !enteringPin && !requestActive && (opening || millis()-checkedAt>=interval)) {
         checkedAt=millis();
-        requestActive=startPanelRead(view==Detail?fleetData.devices[selected].id:nullptr,fleetData.artRevision);
+        const bool charts=!fleetData.chartAt || difftime(time(nullptr),fleetData.chartAt)>=60;
+        requestActive=startPanelRead(view==Detail?fleetData.devices[selected].id:nullptr,fleetData.artRevision,charts);
         if(requestActive) {
             if(warming) ++followups;
             detailPoll=opening?DetailPoll::FirstRead:DetailPoll::Regular;
@@ -691,6 +683,7 @@ void setup() {
     Serial.printf("iBORK frame buffer: %s\n",buffered?"ready":"direct drawing");
     canDim=display_hw::initBacklight();
     touchReady=display_hw::initTouch();
+    touchRetry.checkedAt=millis();
     {
         Preferences prefs;
         if(prefs.begin("display",true)) setTheme(prefs.getUChar("theme",0));
@@ -736,9 +729,20 @@ void loop() {
         } else draw();
     }
     pollSpinner();
+    if(!touchReady && touchRetry.due(millis())) {
+        Wire1.end();
+        touchReady=display_hw::initTouch();
+    }
     if(touchReady) {
         uint16_t x=0,y=0;
-        const auto event=display_hw::readTouch(x,y);
+        bool ioError;
+        const auto event=display_hw::readTouch(x,y,ioError);
+        if(touchRetry.failed(ioError,millis())) {
+            touchReady=false;
+            gesture={}; gesture.cancelled=true;
+            wake.held=wake.consuming=false; brightnessSlider={};
+            return;
+        }
         if(event==panel::Contact::None || wakeTouch(event) || slideBrightness(event,x,y)) { delay(12); return; }
         const int prior=scrollOffset;
         if(gesture.update(event,x,y,(view==Fleet || view==Servers)?layout().limit:0,scrollOffset))
