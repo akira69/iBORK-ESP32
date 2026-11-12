@@ -43,7 +43,7 @@ If you use a reverse proxy, route `/api/v1/panel` and its subpaths to iBORK and 
 
 ## Use the dashboard
 
-While the screen is lit, the panel polls all included servers every 15 seconds. Opening a tile uses the cached chassis state, fan range, temperature and artwork immediately. Polling resumes on wake. When the home layout hides the tiles, use **Servers** in the header. A teal outline identifies each metered server even when its reading is missing. While the service is reading a chassis, the panel shows a spinner and checks again after two seconds, up to three times per cycle. The screen displays the hottest reported temperature and the lowest and highest fan speeds.
+While the screen is lit, the panel polls about every 15 seconds and refreshes chart history about once a minute. Opening a tile shows cached detail immediately and asks the server for an update. An open tile can trigger up to three quick follow-ups while its readings are pending. The dashboard spinner is reserved for the first load. Polling resumes on wake. When the home layout hides the tiles, use **Servers** in the header. A teal outline identifies each metered server even when its reading is missing.
 
 Configure the home sections, server selection, detail widgets and electricity rate in iBORK. Charts leave gaps for unavailable readings. Costs use metered energy and the configured rate. To display custom icons, select **Copy sidebar icons to panel** in the dashboard's panel display settings. Other servers show their initials.
 
@@ -51,7 +51,7 @@ Open **Settings → Color** to compare Teal, Amber, Ice and Crimson. Tap a palet
 
 Use **Settings → Display** to adjust this panel's brightness with the 1–100% slider. Manual brightness works offline and remains in effect after a restart until you tap **Use schedule**. Under **Schedule**, tap **Edit schedule** to set four daily brightness periods. In scheduled mode, touching a dimmed or sleeping screen wakes it; the schedule resumes after five minutes of inactivity. The panel caches the last saved schedule for outages. Paired panels require the current PIN to change the shared schedule.
 
-On a supported server, tap the upper half of the knife switch for **Power on** or the lower half for **Graceful shutdown**, then enter the panel PIN to confirm. The lever rests vertically in the upper contacts when the chassis reports on and horizontally when it reports off. During a temporary loss of telemetry the lever holds its last confirmed position, labeled Last known. Motion between positions previews the selected action before PIN confirmation. If the outcome is unknown, check the server before trying again. **Settings → Change power PIN** changes the shared PIN for all paired panels.
+On a supported server, tap the upper half of the knife switch for **Power on** or the lower half for **Graceful shutdown**, then enter the panel PIN to confirm. PIN entry expires after one minute of inactivity or when the display sleeps. The lever shows the latest available chassis state, labeled **Last known** when it is cached. If the outcome is unknown, check the server before trying again. **Settings → Change power PIN** changes the shared PIN for all paired panels.
 
 ## Board drivers and assets
 

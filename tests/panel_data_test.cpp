@@ -65,6 +65,8 @@ void readRecoveryTests() {
     assert(!strcmp(panel::readHealthText(S::Network,true,false),"Last readings"));
     assert(!strcmp(panel::readHealthText(S::Denied,true,false),"ACCESS DENIED"));
     assert(!*panel::readHealthText(S::Ok,true,true));
+    const panel::RequestDeadline deadline{UINT32_MAX-5};
+    assert(deadline.remaining(4)==11990 && deadline.remaining(11994)==0);
 }
 }
 int main() {
@@ -149,6 +151,7 @@ int main() {
     ++next.devices[0].widgets.count;
     assert(!panel::samePanelLayout(data,next));
     auto powerState=cJSON_AddStringToObject(cJSON_GetObjectItem(root,"detail"),"powerState","on");
+    cJSON_AddTrueToObject(cJSON_GetObjectItem(root,"detail"),"powerFresh");
     assert(data.devices[0].powered==-1 && panel::decode(root,data,now,"rack-1") && data.devices[0].powered==1);
     cJSON_SetValuestring(powerState,"off");
     assert(panel::decode(root,data,now,"rack-1") && data.devices[0].powered==0);
@@ -163,15 +166,28 @@ int main() {
     cJSON_AddStringToObject(row,"id","rack-1");
     cJSON_AddStringToObject(row,"image","YWJj");
     cJSON_AddStringToObject(row,"powerState","on");
+    cJSON_AddFalseToObject(row,"powerFresh");
     cJSON_AddTrueToObject(row,"pending");
     cJSON_AddNumberToObject(root,"artRevision",123);
     PanelData cold{},warm{};
     assert(panel::decode(root,cold,now) && cold.waiting && cold.devices[0].detailBytes==3 && cold.devices[0].powered==1);
+    assert(!cold.devices[0].confirmed);
+    cJSON_ReplaceItemInObject(row,"image",cJSON_CreateString("broken"));
+    assert(panel::decode(root,warm,now) && warm.devices[0].powered==1 && !warm.devices[0].detailImage);
     cJSON_DeleteItemFromObject(row,"image");
     cJSON_DeleteItemFromObject(row,"powerState");
     assert(panel::decode(root,warm,now));
     panel::retainDetails(warm,cold);
     assert(warm.devices[0].detailBytes==3 && warm.devices[0].detailImage && warm.devices[0].powered==1 && !warm.devices[0].confirmed);
+    auto *compact=cJSON_Duplicate(root,true);
+    for(const char *key:{"day","month","dayKwh","monthKwh","dayHours","monthHours"}) cJSON_DeleteItemFromObject(compact,key);
+    assert(!panel::decode(compact,cold,now));
+    assert(panel::decode(compact,cold,now,nullptr,true) && !cold.chartAt);
+    panel::retainDetails(cold,warm);
+    assert(cold.chartAt==now && cold.day[95]==42 && cold.month[119]==84);
+    cJSON_AddNullToObject(compact,"day");
+    assert(!panel::decode(compact,cold,now,nullptr,true));
+    cJSON_Delete(compact);
     cJSON_DeleteItemFromObject(root,"details");
     cJSON_DeleteItemFromObject(root,"artRevision");
     using panel::DetailPoll;

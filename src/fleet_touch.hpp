@@ -4,6 +4,22 @@
 
 namespace panel {
 enum class Contact { None, Down, Up, Cancel };
+struct TouchRetry {
+    uint32_t checkedAt=0;
+    bool failed(bool ioError,uint32_t now) {
+        errors=ioError?errors+1:0;
+        if(errors<3) return false;
+        errors=0; checkedAt=now;
+        return true;
+    }
+    bool due(uint32_t now) {
+        if(now-checkedAt<5000U) return false;
+        checkedAt=now;
+        return true;
+    }
+private:
+    unsigned errors=0;
+};
 struct Gesture {
     int x = 0, y = 0, startOffset = 0;
     bool held = false, moved = false, scrollable = false, cancelled = false;

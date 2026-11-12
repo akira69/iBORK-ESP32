@@ -55,19 +55,21 @@ inline bool initTouch() {
     return Wire1.endTransmission() == 0;
 }
 
-inline panel::Contact readTouch(uint16_t &x, uint16_t &y) {
+inline panel::Contact readTouch(uint16_t &x, uint16_t &y, bool &ioError) {
     using panel::Contact;
     constexpr uint8_t address = 0x5d;
     Wire1.beginTransmission(address);
     Wire1.write(0x81);
     Wire1.write(0x4e);
-    if (Wire1.endTransmission(false) || Wire1.requestFrom(address, uint8_t(7)) != 7) return Contact::Cancel;
+    ioError=Wire1.endTransmission(false) || Wire1.requestFrom(address, uint8_t(7)) != 7;
+    if (ioError) return Contact::Cancel;
     uint8_t data[7];
     for (auto &byte : data) byte = Wire1.read();
     if (!(data[0] & 0x80)) return Contact::None;
     Wire1.beginTransmission(address);
     Wire1.write(0x81); Wire1.write(0x4e); Wire1.write(0);
-    if (Wire1.endTransmission()) return Contact::Cancel;
+    ioError=Wire1.endTransmission()!=0;
+    if (ioError) return Contact::Cancel;
     const unsigned contacts = data[0] & 0x0f;
     if (!contacts) return Contact::Up;
     x = data[2] | (data[3] << 8);
