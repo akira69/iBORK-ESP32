@@ -52,11 +52,27 @@ void displayTests() {
 }
 int main() {
     displayTests();
+    assert(std::abs(panel::monthlyCostEstimate(16.70,197.2f)-60.97363)<0.0001);
+    assert(panel::monthlyCostEstimate(16.70,719.99f)>16.70);
+    assert(panel::monthlyCostEstimate(16.70,720)<0);
+    assert(panel::monthlyCostEstimate(16.70,0)<0);
+    assert(panel::monthlyCostEstimate(-1,197.2f)<0);
+    assert(panel::monthlyCostEstimate(0,197.2f)==0);
+    const auto varying=panel::chartWattRange({-1,184.25f,186.75f});
+    assert(varying.low==184 && varying.high==187);
+    const auto flat=panel::chartWattRange({230,230});
+    assert(flat.low==229 && flat.high==231);
+    const auto zero=panel::chartWattRange({0,0});
+    assert(zero.low==0 && zero.high==1);
+    const auto missing=panel::chartWattRange({-1,-1});
+    assert(missing.low==missing.high);
     const time_t now=1800000000;
     std::string readings="1";
-    for(int i=1;i<24;++i) readings+=",null";
-    std::string report="{\"capturedAt\":1800000000,\"total\":1,\"metered\":1,\"day\":["+readings+
-        "],\"month\":["+readings+",null,null,null,null,null,null],\"dayKwh\":0.25,\"monthKwh\":null,"
+    for(int i=1;i<95;++i) readings+=",null";
+    const auto day=readings+",42";
+    for(int i=95;i<119;++i) readings+=",null";
+    std::string report="{\"capturedAt\":1800000000,\"total\":1,\"metered\":1,\"day\":["+day+
+        "],\"month\":["+readings+",84],\"dayKwh\":0.25,\"monthKwh\":null,"
         "\"dayHours\":0.016667,\"monthHours\":24.5,\"devices\":[{\"id\":\"rack-1\",\"name\":\"Rack\","
         "\"model\":\"File server\",\"watts\":null,\"controls\":true}]}";
     PanelData data{};
@@ -64,6 +80,7 @@ int main() {
     assert(root);
     bool valid=panel::decode(root,data,now);
     assert(valid);
+    assert(data.day[95]==42 && data.month[119]==84);
     assert(panel::deviceIndex(data,"rack-1")==0 && panel::deviceIndex(data,"removed")==-1);
     std::swap(data.devices[0],data.devices[1]); data.count=2;
     assert(panel::deviceIndex(data,"rack-1")==1);
@@ -217,6 +234,10 @@ int main() {
     captured->valuedouble=now;
     valid=panel::decode(root,data,now-31);
     assert(!valid);
+    auto *month=cJSON_GetObjectItem(root,"month");
+    cJSON_AddItemToArray(month,cJSON_CreateNull());
+    assert(!panel::decode(root,data,now));
+    cJSON_DeleteItemFromArray(month,120);
     cJSON_DeleteItemFromArray(cJSON_GetObjectItem(root,"day"),1);
     valid=panel::decode(root,data,now);
     assert(!valid);

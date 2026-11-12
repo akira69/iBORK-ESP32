@@ -38,20 +38,23 @@ struct HomeLayout {
     SectionBox boxes[4];
     int count,limit;
     int deviceAt(int x,int y,int offset,int devices) const {
-        for (int i=0; i<count; ++i)
-            if (boxes[i].kind==Section::Servers) return cardAt(x,y,boxes[i].y-offset,devices);
+        for (int i=0; i<count; ++i) {
+            const auto &box=boxes[i];
+            if (box.kind==Section::Servers && y<box.y-offset+box.h)
+                return cardAt(x,y,box.y-offset,devices);
+        }
         return -1;
     }
 };
 inline bool isChart(Section kind) { return kind==Section::Day || kind==Section::Month; }
-inline HomeLayout homeLayout(const Sections &sections,int devices) {
+inline HomeLayout homeLayout(const Sections &sections,int devices,bool allServerRows=false) {
     HomeLayout layout{};
     int y=78;
     for (int i=0;i<sections.count;++i) {
         const auto kind=sections.items[i];
         const bool pair=isChart(kind) && i+1<sections.count && isChart(sections.items[i+1]);
-        const int rows=devices ? (devices+columns-1)/columns : 1;
-        const int height=kind==Section::Servers ? (rows-1)*rowHeight+cardHeight : isChart(kind) ? 145 : 70;
+        const int rows=allServerRows && devices ? (devices+columns-1)/columns : 1;
+        const int height=kind==Section::Servers ? (rows-1)*rowHeight+cardHeight : isChart(kind) ? 248 : 70;
         layout.boxes[layout.count++]={kind,16,y,pair?376:768,height};
         if (pair) layout.boxes[layout.count++]={sections.items[++i],408,y,376,height};
         y+=height+12;
