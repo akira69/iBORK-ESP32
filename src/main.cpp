@@ -90,7 +90,8 @@ void image(const uint8_t *start, const uint8_t *end, int x, int y) {
 void demo() {
     float day[]={110,103,101,94,91,88,86,88,115,164,170,159,-1,148,135,128,152,158,130,115,97,92,90,91};
     float month[]={132,141,150,134,115,126,131,138,145,132,-1,-1,144,157,161,145,128,137,142,137,154,167,143,135,147,139,128,131,138,125};
-    memcpy(fleetData.day,day,sizeof(day)); memcpy(fleetData.month,month,sizeof(month));
+    for(size_t i=0;i<sizeof(fleetData.day)/sizeof(float);++i) fleetData.day[i]=day[i/4];
+    for(size_t i=0;i<sizeof(fleetData.month)/sizeof(float);++i) fleetData.month[i]=month[i/4];
     fleetData.count=3; fleetData.metered=2;
     PanelDevice samples[]={
         {"storage","Storage","File server",86,true},
@@ -151,7 +152,7 @@ template<size_t N>
 void chart(const panel::SectionBox &b,const char *title,const float (&values)[N],float hours,float kwh,uint32_t accent) {
     const int x=b.x, y=b.y, plotX=x+100, plotWidth=b.w-116;
     const int plotTop=y+76, plotBottom=y+b.h-56, plotHeight=plotBottom-plotTop;
-    const bool monthly=N==30;
+    const bool monthly=b.kind==panel::Section::Month;
     const int costX=x+b.w-(monthly?260:168);
     static String cost,coverage;
     static int16_t last[N];
@@ -159,7 +160,7 @@ void chart(const panel::SectionBox &b,const char *title,const float (&values)[N]
     if(!refreshing) {
         box(x,y,b.w,b.h);
         label(x+15,y+8,title,ink,2);
-        label(x+16,y+45,"Avg W",muted);
+        label(x+16,y+45,monthly?"6 hr avg W":"15 min avg W",muted);
         label(plotX,plotBottom+12,monthly?"30d ago":"24h ago",muted);
         label(x+b.w-50,plotBottom+12,"Now",muted);
         if(monthly) label(costX,y+5,"Actual",muted);
@@ -200,8 +201,8 @@ void chart(const panel::SectionBox &b,const char *title,const float (&values)[N]
     for(size_t i=0;i<N;++i) {
         if(heights[i]<0) { lastX=-1; continue; }
         int px=plotX+plotWidth*i/(N-1),py=plotBottom-heights[i];
-        if(lastX>=0) lcd->drawWideLine(lastX,lastY,px,py,2,accent);
-        else lcd->fillCircle(px,py,2,accent);
+        if(lastX>=0) lcd->drawWideLine(lastX,lastY,px,py,1.5f,accent);
+        else lcd->fillCircle(px,py,1,accent);
         lastX=px; lastY=py;
     }
     publish(x+12,plotClearY,b.w-24,plotClearHeight);
@@ -255,20 +256,21 @@ void fleet(int top=panel::headerHeight,int bottom=panel::screenBottom) {
         else if (b.kind==panel::Section::Day) chart(b,"24 hours",fleetData.day,fleetData.dayHours,fleetData.dayKwh,mint);
         else if (b.kind==panel::Section::Month) chart(b,"30 days",fleetData.month,fleetData.monthHours,fleetData.monthKwh,gold);
         else {
-            int metered=0; float total=0;
-            for(int j=0;j<fleetData.count;++j) if(fleetData.devices[j].watts>=0) { ++metered; total+=fleetData.devices[j].watts; }
-            static String caption,power;
-            if(!refreshing) box(b.x,b.y,b.w,b.h);
-            field(caption,30,b.y+6,248,18,metered<fleetData.metered?"Partial fleet power":"Fleet power",muted);
-            field(power,30,b.y+24,248,44,metered?watts(total):"-- W",mint,3);
+            int reporting=0; float total=0;
+            for(int j=0;j<fleetData.count;++j) if(fleetData.devices[j].watts>=0) { ++reporting; total+=fleetData.devices[j].watts; }
+            static String power,meters;
+            if(!refreshing) {
+                box(b.x,b.y,b.w,b.h);
+                label(30,b.y+6,"Current fleet power",muted);
+                if(hasData) lcd->drawRoundRect(624,b.y+17,144,36,10,teal);
+            }
+            field(power,30,b.y+24,248,44,reporting?watts(total):"-- W",mint,3);
+            if(hasData) field(meters,634,b.y+25,124,20,
+                fleetData.metered?String(reporting)+"/"+String(fleetData.metered)+" reporting":"No meters",ink);
             if(refreshing) continue;
             lcd->drawPng(transmission,assetSize(transmission,transmissionEnd),291,b.y+3);
             label(364,b.y+10,"Electricity rate",muted);
             label(364,b.y+34,fleetData.usdPerKwh>=0?"$"+String(fleetData.usdPerKwh,4)+" / kWh":"-- / kWh",ink);
-            if(hasData) {
-                lcd->drawRoundRect(650,b.y+17,118,36,10,teal);
-                label(663,b.y+25,String(fleetData.metered)+" metered",ink);
-            }
         }
     }
     lcd->clearClipRect();

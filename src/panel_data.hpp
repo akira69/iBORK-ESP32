@@ -45,7 +45,7 @@ struct PanelData {
     time_t capturedAt;
     double usdPerKwh=-1;
     float dayHours, monthHours;
-    float day[24], month[30], dayKwh, monthKwh;
+    float day[96], month[120], dayKwh, monthKwh;
 };
 namespace panel {
 constexpr int monthWindowHours=30*24;
@@ -69,8 +69,8 @@ inline WattRange chartWattRange(const float (&values)[N]) {
     }
     return {low,high};
 }
-// Cold preload includes up to sixteen 8 KiB JPEGs as base64 plus the 84 KiB legacy snapshot.
-constexpr size_t maxSnapshotBytes=256*1024;
+// Cold preload includes up to sixteen 8 KiB JPEGs as base64 plus the snapshot and 216 chart buckets.
+constexpr size_t maxSnapshotBytes=264*1024;
 // Telemetry can be repainted in place while the visible arrangement and artwork match.
 inline bool samePanelLayout(const PanelData &a,const PanelData &b) {
     if(a.count!=b.count || a.metered!=b.metered || a.usdPerKwh!=b.usdPerKwh ||
