@@ -85,6 +85,10 @@ int readBody(http_parser *parser,const char *data,size_t size) {
     memcpy(response.data+response.used,data,size); response.used+=size;
     return 0;
 }
+PanelStatus transportFailure(const char *phase) {
+    if(operation==PanelRequest::Read) Serial.printf("iBORK panel transport: %s\n",phase);
+    return PanelStatus::Network;
+}
 PanelStatus request() {
     String origin=IBORK_PANEL_URL;
     if(origin.endsWith("/")) origin.remove(origin.length()-1);
@@ -99,7 +103,7 @@ PanelStatus request() {
     tls.setHandshakeTimeout(5);
     String hostname=origin.substring(host.off,host.off+host.len);
     const uint16_t port=(url.field_set & (1<<UF_PORT)) ? url.port : 443;
-    if(!tls.connect(hostname.c_str(),port,timeoutMs)) return PanelStatus::Network;
+    if(!tls.connect(hostname.c_str(),port,timeoutMs)) return transportFailure("connect");
     tls.setTimeout(5);
     String headers=requestLine(operation);
     if(operation==PanelRequest::Read) {
@@ -111,7 +115,7 @@ PanelStatus request() {
     if(operation!=PanelRequest::Read) headers+="\r\nContent-Type: application/json\r\nContent-Length: "+String(strlen(body));
     headers+="\r\n\r\n";
     if(tls.print(headers)!=headers.length() ||
-       (operation!=PanelRequest::Read && tls.print(body)!=strlen(body))) return PanelStatus::Network;
+       (operation!=PanelRequest::Read && tls.print(body)!=strlen(body))) return transportFailure("send");
     mbedtls_platform_zeroize(body,sizeof(body));
 
     const size_t capacity=responseCapacity(operation);
@@ -128,7 +132,7 @@ PanelStatus request() {
     size_t received=0;
     uint32_t started=millis();
     while(!response.complete) {
-        if(elapsed(millis(),started,timeoutMs)) return PanelStatus::Network;
+        if(elapsed(millis(),started,timeoutMs)) return transportFailure("response timeout");
         char chunk[512];
         int n=tls.read(reinterpret_cast<uint8_t *>(chunk),sizeof(chunk));
         if(n<=0 && tls.connected()) { delay(5); continue; }
@@ -136,7 +140,7 @@ PanelStatus request() {
         received+=count;
         if(received>capacity+8192) return PanelStatus::Invalid;
         http_parser_execute(&parser,&settings,chunk,count);
-        if(!response.complete && (!count || HTTP_PARSER_ERRNO(&parser)!=HPE_OK)) return PanelStatus::Network;
+        if(!response.complete && (!count || HTTP_PARSER_ERRNO(&parser)!=HPE_OK)) return transportFailure("incomplete response");
     }
     const PanelStatus status=responseStatus(operation,parser.status_code);
     if(status!=PanelStatus::Ok) return status;

@@ -43,18 +43,21 @@ bool locked;
 unsigned failures;
 PanelData fleetData{};
 PanelStatus health=PanelStatus::Network;
+panel::ReadRetry readRetry;
 int selected, scrollOffset;
 bool detailFromServers;
 using panel::DetailPoll;
 DetailPoll detailPoll=DetailPoll::Regular;
 panel::Gesture gesture;
 bool paintedLink;
+const char *paintedHealth="";
 String notice;
 const char *powerNotice="";
 const char *action="on";
 void draw();
 void clearPin() { mbedtls_platform_zeroize(pin,sizeof(pin)); pinLen=0; }
-bool fresh() { return !live || (connected && hasData && health==PanelStatus::Ok && millis()-goodAt<60000); }
+bool recentReadings() { return hasData && millis()-goodAt<60000; }
+bool fresh() { return !live || (connected && health==PanelStatus::Ok && recentReadings()); }
 
 #define ART(name,ext) extern const uint8_t name[] asm("_binary_art_" #name "_" #ext "_start"); \
                   extern const uint8_t name##End[] asm("_binary_art_" #name "_" #ext "_end")
@@ -361,6 +364,7 @@ void detail() {
         if(kind==panel::Section::Controls) continue;
         const bool power=kind==panel::Section::Power, temp=kind==panel::Section::Temperature;
         const bool current=d.hasDetail;
+        const bool loading=(fresh() && d.pending) || (!current && connected && requestActive);
         const bool fan=kind==panel::Section::Fan;
         const int height=fan?78:58;
         if(!refreshing) {
@@ -370,14 +374,14 @@ void detail() {
         static String powerReading,temperature,lowest,highest;
         const int x=controls?208:378, width=controls?248:378;
         if(fan) {
-            const auto rpm=[&d,current](float speed) -> String {
-                return current && std::isfinite(speed)?String(speed,0)+" RPM":d.pending || (!current && requestActive)?"Loading":"No reading";
+            const auto rpm=[current,loading](float speed) -> String {
+                return current && std::isfinite(speed)?String(speed,0)+" RPM":loading?"Loading":"No reading";
             };
             field(lowest,x,y+8,width,32,"Lowest: "+rpm(d.fan),mint,2);
             field(highest,x,y+40,width,32,"Highest: "+rpm(d.fanMax),mint,2);
         } else {
             field(power?powerReading:temperature,x,y+14,width,33,power?watts(d.watts):current && std::isfinite(d.temperature)?
-                  String(d.temperature,1)+u8" \u00b0C":d.pending || (!current && requestActive)?"Loading":"No reading",mint,2);
+                  String(d.temperature,1)+u8" \u00b0C":loading?"Loading":"No reading",mint,2);
         }
         y+=height+8;
     }
@@ -408,14 +412,10 @@ void keypad() {
 const char *healthText() {
     if(!live) return "DEMO DATA";
     if(!connected) return hasData?"Offline - last readings":"Offline";
-    if(!fresh() && hasData) return "Stale readings";
-    switch(health) {
-        case PanelStatus::Config: return "CHECK PANEL CONFIG";
-        case PanelStatus::Clock: return "WAITING FOR CLOCK";
-        case PanelStatus::Denied: return "ACCESS DENIED";
-        case PanelStatus::Invalid: return "INVALID RESPONSE";
-        default: return fresh()?"":"WAITING FOR IBORK";
-    }
+    return panel::readHealthText(health,hasData,recentReadings());
+}
+bool connectionChanged() {
+    return paintedLink!=(live && fresh()) || strcmp(paintedHealth,healthText())!=0;
 }
 void connectionIcons() {
     constexpr uint32_t active=0x61e796, unavailable=0xff6c73;
@@ -434,14 +434,15 @@ void connectionIcons() {
 void refreshStatus() {
     lcd->fillRect(312,7,208,56,bar);
     lcd->setClipRect(312,7,184,56);
-    label(315,24,healthText(),gold);
+    paintedHealth=healthText();
+    label(315,24,paintedHealth,gold);
     lcd->clearClipRect();
     connectionIcons();
     publish(312,7,318,56);
 }
 void pollSpinner() {
     static int previous=-1;
-    const bool loading=live && connected && (requestActive || (fleetData.waiting && followups<3));
+    const bool loading=live && connected && !hasData && requestActive;
     const int phase=loading?int((millis()/125)%8):-1;
     if(!brightness || phase==previous) return;
     previous=phase;
@@ -609,7 +610,6 @@ void servicePanel() {
     if(view==Pin || view==Detail) strlcpy(id,fleetData.devices[selected].id,sizeof(id));
     bool layoutChanged=false;
     const bool hadData=hasData;
-    const auto priorHealth=health;
     const auto priorView=view;
     if(takePanelResult(status,kind,fleetData,layoutChanged)) {
         requestActive=false;
@@ -622,7 +622,12 @@ void servicePanel() {
             checkedAt=millis()-30000;
         } else {
             health=status; checkedAt=millis();
+            if(readRetry.completed(status) && connected && view!=Network) {
+                Serial.println("iBORK panel transport: reconnecting Wi-Fi");
+                WiFi.reconnect();
+            }
             if(status==PanelStatus::Ok) {
+                if(!fleetData.waiting) followups=0;
                 if(panel::validDisplaySchedule(fleetData.displaySchedule))
                     rememberSchedule(fleetData.displaySchedule);
                 hasData=true; goodAt=millis()-uint32_t(min(86400.0,max(0.0,difftime(time(nullptr),fleetData.capturedAt)))*1000);
@@ -648,14 +653,14 @@ void servicePanel() {
         }
         if(view!=Network) {
             const bool dashboard=view==Fleet || view==Servers || view==Detail;
-            const bool statusChanged=priorHealth!=health || paintedLink!=(live && fresh());
+            const bool statusChanged=connectionChanged();
             if(kind!=PanelRequest::Read || layoutChanged || (!hadData && hasData) || priorView!=view ||
                (!dashboard && statusChanged)) draw();
             else if(brightness && dashboard) {
                 refreshing=true; refreshPixels=0;
                 if(buffered) lcd=&frame;
                 if(statusChanged) refreshStatus();
-                if(view==Detail) detail(); else fleet();
+                if(view==Detail) detail(); else if(status==PanelStatus::Ok) fleet();
                 lcd=&screen; refreshing=false;
                 Serial.printf("iBORK refresh: %u pixels\n",refreshPixels);
             }
@@ -664,13 +669,13 @@ void servicePanel() {
     if(view==Pin && !fresh()) { view=Detail; clearPin(); notice="Refresh required"; draw(); }
     const bool opening=view==Detail && detailPoll==DetailPoll::Opened;
     const bool warming=health==PanelStatus::Ok && fleetData.waiting && followups<3;
-    const uint32_t interval=warming?2000U:view==Detail && detailPoll==DetailPoll::Followup?3000U:
-                            health==PanelStatus::Clock?5000U:15000U;
-    if(brightness && connected && !requestActive && (opening || millis()-checkedAt>=interval)) {
+    const uint32_t interval=warming?2000U:health==PanelStatus::Ok && view==Detail && detailPoll==DetailPoll::Followup?3000U:
+                            health==PanelStatus::Clock?5000U:readRetry.delayMs();
+    if(brightness && connected && view!=Network && !requestActive && (opening || millis()-checkedAt>=interval)) {
         checkedAt=millis();
         requestActive=startPanelRead(view==Detail?fleetData.devices[selected].id:nullptr,fleetData.artRevision);
         if(requestActive) {
-            followups=warming?followups+1:0;
+            if(warming) ++followups;
             detailPoll=opening?DetailPoll::FirstRead:DetailPoll::Regular;
         }
     }
@@ -725,7 +730,7 @@ void loop() {
     serviceChangePin();
     serviceScreen();
     if(locked && millis()-lockedAt>=30000) { locked=false; notice=""; if(view==Pin) draw(); }
-    if(brightness && paintedLink!=(live && fresh())) {
+    if(brightness && connectionChanged()) {
         if(view==Fleet || view==Servers || view==Detail) {
             refreshLink();
         } else draw();

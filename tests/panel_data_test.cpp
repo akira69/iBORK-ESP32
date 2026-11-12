@@ -49,9 +49,27 @@ void displayTests() {
     assert(panel::responseStatus(PanelRequest::Display,409)==PanelStatus::Stale);
     assert(panel::responseStatus(PanelRequest::Display,403)==PanelStatus::Denied);
 }
+void readRecoveryTests() {
+    using S=PanelStatus;
+    panel::ReadRetry retry;
+    assert(retry.delayMs()==15000);
+    assert(!retry.completed(S::Network) && retry.delayMs()==2000);
+    assert(!retry.completed(S::Network) && retry.delayMs()==5000);
+    assert(retry.completed(S::Network) && retry.delayMs()==15000);
+    for(int i=0;i<8;++i) assert(!retry.completed(S::Network) && retry.delayMs()==30000);
+    assert(!retry.completed(S::Ok) && retry.delayMs()==15000);
+    assert(!retry.completed(S::Network) && retry.delayMs()==2000);
+    assert(panel::responseStatus(PanelRequest::Read,503)==S::Unavailable);
+    assert(!retry.completed(S::Unavailable) && retry.delayMs()==15000);
+    assert(!strcmp(panel::readHealthText(S::Network,true,true),"Retrying iBORK"));
+    assert(!strcmp(panel::readHealthText(S::Network,true,false),"Last readings"));
+    assert(!strcmp(panel::readHealthText(S::Denied,true,false),"ACCESS DENIED"));
+    assert(!*panel::readHealthText(S::Ok,true,true));
+}
 }
 int main() {
     displayTests();
+    readRecoveryTests();
     assert(std::abs(panel::monthlyCostEstimate(16.70,197.2f)-60.97363)<0.0001);
     assert(panel::monthlyCostEstimate(16.70,719.99f)>16.70);
     assert(panel::monthlyCostEstimate(16.70,720)<0);

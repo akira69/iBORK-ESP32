@@ -1,7 +1,7 @@
 #pragma once
 #include "panel_data.hpp"
 
-enum class PanelStatus { Ok, Config, Clock, Network, Invalid, Denied, Limited, Unauthorized, Unsupported, Rejected, Stale };
+enum class PanelStatus { Ok, Config, Clock, Network, Invalid, Denied, Limited, Unauthorized, Unsupported, Rejected, Stale, Unavailable };
 enum class PanelRequest { Read, Power, ChangePin, Display };
 namespace panel {
 // Command endpoints return a short acknowledgement or error.
@@ -40,7 +40,38 @@ inline PanelStatus responseStatus(PanelRequest kind,unsigned code) {
     }
     if(code==401 || code==403) return PanelStatus::Denied;
     if(code==429) return PanelStatus::Limited;
-    return code==200?PanelStatus::Ok:PanelStatus::Network;
+    if(code==200) return PanelStatus::Ok;
+    return kind==PanelRequest::Read?PanelStatus::Unavailable:PanelStatus::Network;
+}
+
+struct ReadRetry {
+    bool completed(PanelStatus status) {
+        if(status!=PanelStatus::Network) {
+            failures=0;
+            return false;
+        }
+        if(failures<4) ++failures;
+        return failures==3;
+    }
+    uint32_t delayMs() const {
+        constexpr uint32_t delays[]={15000,2000,5000,15000,30000};
+        return delays[failures];
+    }
+private:
+    unsigned failures=0;
+};
+
+inline const char *readHealthText(PanelStatus status,bool hasData,bool recent) {
+    switch(status) {
+        case PanelStatus::Config: return "CHECK PANEL CONFIG";
+        case PanelStatus::Clock: return "WAITING FOR CLOCK";
+        case PanelStatus::Denied: return "ACCESS DENIED";
+        case PanelStatus::Invalid: return "INVALID RESPONSE";
+        default: break;
+    }
+    if(status==PanelStatus::Ok && recent) return "";
+    if(hasData) return recent?"Retrying iBORK":"Last readings";
+    return "WAITING FOR IBORK";
 }
 }
 bool panelConfigured();
