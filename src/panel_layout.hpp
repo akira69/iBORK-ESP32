@@ -15,13 +15,13 @@ constexpr Sections defaultHome{4,{Section::Power,Section::Day,Section::Month,Sec
 constexpr Sections defaultWidgets{2,{Section::Power,Section::Controls}};
 constexpr Sections selectorSections{1,{Section::Servers}};
 constexpr int headerHeight=70, screenBottom=480, columns=4, columnWidth=194, cardWidth=188, rowHeight=56, cardHeight=50;
-constexpr int navX=198, navY=10, navW=108, navH=48;
+constexpr int navX=284, navY=10, navW=108, navH=48;
 constexpr bool navHit(int x,int y) { return x>=navX && x<navX+navW && y>=navY && y<navY+navH; }
-constexpr int paletteWidth=374, paletteHeight=108;
-constexpr int paletteX(int index) { return 16+(index%2)*394; }
-constexpr int paletteY(int index) { return 162+(index/2)*124; }
+constexpr int paletteCount=8, paletteWidth=183, paletteHeight=128;
+constexpr int paletteX(int index) { return 16+(index%4)*195; }
+constexpr int paletteY(int index) { return 136+(index/4)*144; }
 inline int paletteAt(int x,int y) {
-    for(int i=0;i<4;++i)
+    for(int i=0;i<paletteCount;++i)
         if(x>=paletteX(i) && x<paletteX(i)+paletteWidth && y>=paletteY(i) && y<paletteY(i)+paletteHeight) return i;
     return -1;
 }

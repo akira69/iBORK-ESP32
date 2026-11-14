@@ -4,13 +4,14 @@
 
 int main() {
     using namespace panel;
-    static_assert(!navHit(74,32) && !navHit(120,32) && navHit(198,10) && navHit(305,57) && !navHit(306,57));
-    for(int i=0;i<4;++i) {
+    static_assert(!navHit(74,32) && !navHit(278,32) && navHit(284,10) && navHit(391,57) && !navHit(392,57));
+    for(int i=0;i<8;++i) {
         const int x=paletteX(i), y=paletteY(i);
         assert(paletteAt(x,y)==i && paletteAt(x+paletteWidth-1,y+paletteHeight-1)==i);
         assert(paletteAt(x+paletteWidth,y)==-1 && paletteAt(x,y+paletteHeight)==-1);
     }
     assert(paletteAt(250,30)==-1 && paletteAt(750,479)==-1);
+    assert(paletteAt(paletteX(7),paletteY(7))==7);
     const auto standard=homeLayout(defaultHome,16);
     assert(standard.limit==0 && standard.boxes[1].h>200 && standard.boxes[2].h==standard.boxes[1].h);
     assert(standard.boxes[3].h==cardHeight);

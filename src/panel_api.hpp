@@ -51,6 +51,16 @@ inline PanelStatus responseStatus(PanelRequest kind,unsigned code) {
     return kind==PanelRequest::Read?PanelStatus::Unavailable:PanelStatus::Network;
 }
 
+struct StationRetry {
+    bool due(bool waiting,uint32_t now) {
+        if(!waiting && !elapsed(now,checkedAt,30000U)) return false;
+        checkedAt=now;
+        return !waiting;
+    }
+private:
+    uint32_t checkedAt=0;
+};
+
 struct ReadRetry {
     bool completed(PanelStatus status) {
         if(status!=PanelStatus::Network) {
@@ -58,7 +68,7 @@ struct ReadRetry {
             return false;
         }
         if(failures<4) ++failures;
-        return failures==3;
+        return failures>=3;
     }
     uint32_t delayMs() const {
         constexpr uint32_t delays[]={15000,2000,5000,15000,30000};

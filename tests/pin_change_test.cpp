@@ -12,8 +12,11 @@ size_t pinLen;
 int submissions;
 bool canSubmit=true;
 const char *keys[]={"1","2","3","4","5","6","7","8","9","Clear","0","Del"};
-constexpr int ink=1, muted=2, gold=3, bg=4, tile=5;
-struct { void fillRect(int,int,int,int,int) {} } screen;
+constexpr int ink=1, muted=2, gold=3, bg=4, tile=5, mint=6;
+struct {
+    void fillRect(int,int,int,int,int) {}
+    void drawRoundRect(int,int,int,int,int,int) {}
+} screen;
 auto *lcd=&screen;
 void box(int,int,int,int,int=0) {}
 std::string enteredMask;

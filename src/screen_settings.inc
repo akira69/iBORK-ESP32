@@ -1,7 +1,11 @@
 // Included with the other touchscreen views; both PIN prompts reuse the power keypad.
 panel::DisplaySchedule schedule=panel::defaultDisplaySchedule(), draft;
 panel::ScreenWake wake;
-panel::BrightnessSlider brightnessSlider;
+panel::BrightnessSlider brightnessSlider, contrastSlider;
+constexpr int contrastOffset=120;
+panel::ClockSettings clockSettings;
+bool clockDirty=true;
+const char *clockNote="";
 int periodIndex, brightness=100;
 bool canDim, savingSchedule, cacheSaved=true;
 const char *scheduleNote="";
@@ -11,8 +15,14 @@ void loadSchedule() {
     Preferences prefs;
     panel::DisplaySchedule saved{};
     if(!prefs.begin("display",true)) return;
+    panel::ClockSettings savedClock;
+    const size_t clockBytes=prefs.getBytesLength("clock-v1");
+    // The previous format stored only mode, font and style.
+    if((clockBytes==3 || clockBytes==sizeof(savedClock)) &&
+       prefs.getBytes("clock-v1",&savedClock,clockBytes)==clockBytes &&
+       savedClock.valid()) clockSettings=savedClock;
     const int manual=prefs.getUChar("brightness",0);
-    wake.manualBrightness=manual<=100?manual:0;
+    wake.manualBrightness=panel::savedManualBrightness(manual);
     if(prefs.getBytesLength(scheduleKey())==sizeof(saved) &&
        prefs.getBytes(scheduleKey(),&saved,sizeof(saved))==sizeof(saved) &&
        panel::validDisplaySchedule(saved)) schedule=saved;
@@ -58,7 +68,7 @@ bool wakeTouch(panel::Contact event) {
 }
 String startText(int start) {
     char clock[6];
-    snprintf(clock,sizeof(clock),"%02d:%02d",start/60,start%60);
+    panel::formatMinuteOfDay(clock,start);
     return clock;
 }
 String stateText(int level) {
@@ -71,50 +81,94 @@ void openSchedule() {
     scheduleNote="";
 }
 void scheduleButton(int x,int y,int w,const String &caption,bool selected=false) {
-    box(x,y,w,48,selected?0x215448:tile);
+    box(x,y,w,48);
+    if(selected) lcd->drawRoundRect(x,y,w,48,10,mint);
     label(x+10,y+12,caption,selected?mint:ink);
+}
+void drawDisplaySlider(const char *name,int level,int minimum,int offset) {
+    label(20,132+offset,String(name)+"  "+level+"%",ink,2);
+    constexpr int span=panel::BrightnessSlider::right-panel::BrightnessSlider::left;
+    const int x=panel::BrightnessSlider::left+(constrain(level,minimum,100)-minimum)*span/(100-minimum);
+    lcd->fillRoundRect(40,204+offset,span,8,4,grid);
+    lcd->fillRoundRect(40,204+offset,max(8,x-40),8,4,mint);
+    lcd->fillCircle(x,208+offset,14,mint);
+    label(40,236+offset,String(minimum)+"%",muted); label(508,236+offset,"100%",muted);
 }
 void drawDisplay() {
     label(18,78,"Display",ink,2);
-    label(20,132,"Brightness  "+String(wake.manualBrightness?wake.manualBrightness:brightness)+"%",ink,2);
-    const int level=wake.manualBrightness?wake.manualBrightness:brightness;
-    const int x=panel::BrightnessSlider::left+(constrain(level,1,100)-1)*510/99;
-    lcd->fillRoundRect(40,204,510,8,4,grid);
-    lcd->fillRoundRect(40,204,max(8,x-40),8,4,mint);
-    lcd->fillCircle(x,208,14,mint);
-    label(40,244,"1%",muted); label(508,244,"100%",muted);
+    drawDisplaySlider("Brightness",wake.manualBrightness?wake.manualBrightness:brightness,panel::minManualBrightness,0);
+    drawDisplaySlider("Contrast",contrast,0,contrastOffset);
     scheduleButton(604,184,174,"Use schedule",!wake.manualBrightness);
-    label(20,280,wake.manualBrightness?"Manual brightness on this panel":"Following schedule; touch wakes for five minutes",muted);
-    label(20,328,"Schedule",ink,2);
-    label(20,368,"Four daily periods in panel local time",muted);
+    label(20,400,wake.manualBrightness?"Manual brightness on this panel":"Following schedule; touch wakes for five minutes",muted);
     scheduleButton(604,344,174,"Edit schedule");
-    label(20,432,canDim?displayNote:"Backlight control unavailable.",gold);
+    scheduleButton(604,408,174,"Clock settings");
+    label(20,432,*displayNote || canDim?displayNote:"Backlight control unavailable.",gold);
 }
-void saveBrightness() {
+void saveDisplaySetting(const char *key,int value) {
     Preferences prefs;
-    displayNote=prefs.begin("display",false) && prefs.putUChar("brightness",wake.manualBrightness)==1?
+    displayNote=prefs.begin("display",false) && prefs.putUChar(key,value)==1?
         "":"Applied; local save failed. Adjust again to retry.";
 }
-bool slideBrightness(panel::Contact event,int x,int y) {
-    if(view!=Display || !canDim) { brightnessSlider={}; return false; }
-    const int previous=wake.manualBrightness;
-    if(!brightnessSlider.update(event,x,y,wake.manualBrightness)) return false;
+bool slideDisplay(panel::Contact event,int x,int y) {
+    if(view!=Display) { brightnessSlider={}; contrastSlider={}; return false; }
+    const int previousBrightness=wake.manualBrightness, previousContrast=contrast;
+    const bool adjustingBrightness=canDim && brightnessSlider.update(event,x,y,wake.manualBrightness);
+    const bool adjustingContrast=contrastSlider.update(event,x,y,contrast,0,contrastOffset);
+    if(!adjustingBrightness && !adjustingContrast) return false;
     gesture={};
-    if(event==panel::Contact::Up) { saveBrightness(); draw(); }
-    else if(previous!=wake.manualBrightness) {
+    if(event==panel::Contact::Up) {
+        if(adjustingBrightness) saveDisplaySetting("brightness",wake.manualBrightness);
+        else saveDisplaySetting("contrast",contrast);
+    } else {
+        if(previousBrightness==wake.manualBrightness && previousContrast==contrast) return true;
         displayNote="";
-        setScreenBrightness(wake.manualBrightness);
-        draw();
+        if(adjustingBrightness) setScreenBrightness(wake.manualBrightness);
+        else setTheme(theme);
     }
+    draw();
     return true;
 }
 void tapDisplay(int x,int y) {
     if(x>=604 && x<778 && y>=184 && y<232 && canDim) {
         wake={};
-        saveBrightness();
+        saveDisplaySetting("brightness",wake.manualBrightness);
         setScreenBrightness(panel::brightnessAt(schedule,panel::localMinuteOfDay(time(nullptr))));
     } else if(x>=604 && x<778 && y>=344 && y<392) openSchedule();
+    else if(x>=604 && x<778 && y>=408 && y<456) { view=Clock; clockNote=""; }
     else return;
+    draw();
+}
+constexpr int clockRowY=144, clockRowGap=49, clockOptionX=140, clockOptionGap=160, clockOptionW=148;
+constexpr const char *clockLabels[]={"Time format", "Font", "Style", "Size", "Color", "Weight"};
+constexpr const char *clockOptions[][4]={{"24-hour","12-hour","Off"},{"Panel","Bitmap","Seven-segment"},
+    {"Plain","Accent","Framed"},{"Small","Medium","Large"},{"Default","Mint","Amber","Ice"},{"Regular","Bold"}};
+void drawClockSettings() {
+    label(18,78,"Clock settings",ink,2);
+    const int selected[]={int(clockSettings.mode),clockSettings.font,clockSettings.style,
+        clockSettings.size,clockSettings.color,clockSettings.bold};
+    for(int row=0;row<6;++row) {
+        const int y=clockRowY+row*clockRowGap;
+        label(20,y+12,clockLabels[row],muted);
+        for(int i=0;i<4 && clockOptions[row][i];++i)
+            scheduleButton(clockOptionX+i*clockOptionGap,y,clockOptionW,clockOptions[row][i],selected[row]==i);
+    }
+    label(20,442,clockNote,gold);
+}
+void tapClockSettings(int x,int y) {
+    if(x<clockOptionX || y<clockRowY) return;
+    const int row=(y-clockRowY)/clockRowGap, option=(x-clockOptionX)/clockOptionGap;
+    if(row>=6 || option>=4 || !clockOptions[row][option] ||
+       (y-clockRowY)%clockRowGap>=48 || (x-clockOptionX)%clockOptionGap>=clockOptionW) return;
+    if(row==0) clockSettings.mode=static_cast<panel::ClockMode>(option);
+    else if(row==1) clockSettings.font=option;
+    else {
+        uint8_t *values[]={&clockSettings.font,&clockSettings.style,&clockSettings.size,&clockSettings.color,&clockSettings.bold};
+        *values[row-1]=option;
+    }
+    Preferences prefs;
+    clockNote=prefs.begin("display",false) && prefs.putBytes("clock-v1",&clockSettings,sizeof(clockSettings))==sizeof(clockSettings)?
+        "":"Applied; local save failed. Tap again to retry.";
+    clockDirty=true;
     draw();
 }
 void drawSchedule() {

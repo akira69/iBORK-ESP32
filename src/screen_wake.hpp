@@ -3,6 +3,10 @@
 #include "fleet_touch.hpp"
 
 namespace panel {
+constexpr int minManualBrightness=10;
+constexpr int savedManualBrightness(int value) {
+    return value<=0 || value>100?0:value<minManualBrightness?minManualBrightness:value;
+}
 struct ScreenWake {
     uint32_t touchedAt=0;
     int manualBrightness=0;
@@ -25,14 +29,15 @@ struct ScreenWake {
         return skip;
     }
     int level(int scheduled,uint32_t now) {
-        return manualBrightness>0?manualBrightness:awake(now)?100:scheduled;
+        const int manual=savedManualBrightness(manualBrightness);
+        return manual?manual:awake(now)?100:scheduled;
     }
 };
 
 struct BrightnessSlider {
     static constexpr int left=40, right=550, top=180, bottom=236;
     bool held=false, cancelled=false;
-    bool update(Contact event,int x,int y,int &level) {
+    bool update(Contact event,int x,int y,int &level,int minimum=minManualBrightness,int offset=0) {
         if(event==Contact::None) return false;
         if(event==Contact::Up) {
             const bool consumed=held;
@@ -41,10 +46,10 @@ struct BrightnessSlider {
         }
         if(event==Contact::Cancel) { cancelled=true; return held; }
         if(cancelled) return held;
-        if(!held) held=x>=left && x<=right && y>=top && y<bottom;
+        if(!held) held=x>=left && x<=right && y>=top+offset && y<bottom+offset;
         if(!held) { cancelled=true; return false; }
         x=x<left?left:x>right?right:x;
-        level=1+((x-left)*99+(right-left)/2)/(right-left);
+        level=minimum+((x-left)*(100-minimum)+(right-left)/2)/(right-left);
         return true;
     }
 };
