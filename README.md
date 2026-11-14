@@ -49,7 +49,7 @@ Configure the home sections, server selection, detail widgets and electricity ra
 
 Open **Settings → Color** to compare Teal, Amber, Ice and Crimson. Tap a palette to save it on this display. The metered badge and server tiles share a teal outline in every mode.
 
-Use **Settings → Display** to adjust this panel's brightness with the 1–100% slider. Manual brightness works offline and remains in effect after a restart until you tap **Use schedule**. Under **Schedule**, tap **Edit schedule** to set four daily brightness periods. In scheduled mode, touching a dimmed or sleeping screen wakes it; the schedule resumes after five minutes of inactivity. The panel caches the last saved schedule for outages. Paired panels require the current PIN to change the shared schedule.
+Use **Settings → Display** to adjust this panel's brightness with the 10–100% slider. Manual brightness works offline and remains in effect after a restart until you tap **Use schedule**. Under **Schedule**, tap **Edit schedule** to set four daily brightness periods. In scheduled mode, touching a dimmed or sleeping screen wakes it; the schedule resumes after five minutes of inactivity. The panel caches the last saved schedule for outages. Paired panels require the current PIN to change the shared schedule.
 
 On a supported server, tap the upper half of the knife switch for **Power on** or the lower half for **Graceful shutdown**, then enter the panel PIN to confirm. PIN entry expires after one minute of inactivity or when the display sleeps. The lever shows the latest available chassis state, labeled **Last known** when it is cached. If the outcome is unknown, check the server before trying again. **Settings → Change power PIN** changes the shared PIN for all paired panels.
 

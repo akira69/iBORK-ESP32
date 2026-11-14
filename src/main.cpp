@@ -38,14 +38,27 @@ bool headerDrawn;
 const char *themeNote="";
 uint32_t bg=palettes[0].background, tile=palettes[0].surface, mint=palettes[0].accent;
 uint32_t bar=palettes[0].header, grid=palettes[0].line;
+constexpr uint32_t ink=0xf2f7f8, gold=0xffbc66;
+uint32_t muted=0xaac1cc;
+int contrast;
+uint32_t mixColor(uint32_t from,uint32_t to,int percent) {
+    uint32_t color=0;
+    for(int shift=0;shift<24;shift+=8) {
+        const uint32_t channel=(((from>>shift)&255)*(100-percent)+((to>>shift)&255)*percent+50)/100;
+        color|=channel<<shift;
+    }
+    return color;
+}
 void setTheme(unsigned index) {
     theme=index<panel::paletteCount?index:0;
     const auto &palette=palettes[theme];
-    bg=palette.background; tile=palette.surface; mint=palette.accent;
-    bar=palette.header; grid=palette.line;
+    bg=mixColor(palette.background,0,contrast/2);
+    tile=palette.surface; mint=palette.accent;
+    bar=mixColor(palette.header,0,contrast/2);
+    grid=mixColor(palette.line,0xaac1cc,contrast/2);
+    muted=mixColor(0xaac1cc,ink,contrast);
     headerDrawn=false;
 }
-constexpr uint32_t ink=0xf2f7f8, muted=0xaac1cc, gold=0xffbc66;
 constexpr int gearX=645, gearY=8, gearW=60, gearH=54;
 bool connected, touchReady, displayReady, hasData, requestActive, live, pendingPower;
 char pin[13]{}, pendingDevice[33]{};
@@ -732,7 +745,10 @@ void setup() {
     touchRetry.checkedAt=millis();
     {
         Preferences prefs;
-        if(prefs.begin("display",true)) setTheme(prefs.getUChar("theme",0));
+        if(prefs.begin("display",true)) {
+            contrast=min(100,int(prefs.getUChar("contrast",0)));
+            setTheme(prefs.getUChar("theme",0));
+        }
     }
     live=panelConfigured(); loadSchedule(); if(!live) demo();
 
@@ -802,7 +818,7 @@ void loop() {
             wake.held=wake.consuming=false; brightnessSlider={};
             return;
         }
-        if(event==panel::Contact::None || wakeTouch(event) || slideBrightness(event,x,y)) { delay(12); return; }
+        if(event==panel::Contact::None || wakeTouch(event) || slideDisplay(event,x,y)) { delay(12); return; }
         const int prior=scrollOffset;
         if(gesture.update(event,x,y,(view==Fleet || view==Servers)?layout().limit:0,scrollOffset))
             tap(gesture.x,gesture.y);

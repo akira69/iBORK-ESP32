@@ -21,7 +21,7 @@ int main() {
     assert(manual.level(0,3)==25);
     assert(manual.level(100,300003)==25);
     manual.manualBrightness=1;
-    assert(manual.level(100,300004)==1);
+    assert(manual.level(100,300004)==10);
     manual.manualBrightness=100;
     assert(manual.level(0,300005)==100);
     manual.manualBrightness=0;
@@ -35,16 +35,21 @@ int main() {
     assert(!slider.update(Contact::Down,40,100,level));
     assert(!slider.update(Contact::Down,40,200,level) && level==100);
     assert(!slider.update(Contact::Up,40,100,level));
-    assert(slider.update(Contact::Down,40,200,level) && level==1);
-    assert(slider.update(Contact::Down,295,200,level) && level==51);
+    assert(slider.update(Contact::Down,40,200,level) && level==10);
+    assert(slider.update(Contact::Down,295,200,level) && level==55);
     assert(slider.update(Contact::Down,799,300,level) && level==100);
-    assert(slider.update(Contact::Down,0,200,level) && level==1);
+    assert(slider.update(Contact::Down,0,200,level) && level==10);
     assert(slider.update(Contact::Cancel,300,200,level));
-    assert(slider.update(Contact::Down,550,200,level) && level==1);
+    assert(slider.update(Contact::Down,550,200,level) && level==10);
     assert(slider.update(Contact::Up,0,0,level));
     assert(slider.update(Contact::Down,550,200,level) && level==100);
     assert(slider.update(Contact::Up,0,0,level));
     assert(!slider.update(Contact::Down,604,200,level));
+    BrightnessSlider contrast;
+    assert(contrast.update(Contact::Down,40,320,level,0,120) && level==0);
+    assert(contrast.update(Contact::Down,295,320,level,0,120) && level==50);
+    assert(contrast.update(Contact::Down,550,320,level,0,120) && level==100);
+    assert(contrast.update(Contact::Up,550,320,level,0,120));
     for(int brightness : {0,25,99}) {
         ScreenWake wake;
         const uint32_t start=std::numeric_limits<uint32_t>::max()-1000;
