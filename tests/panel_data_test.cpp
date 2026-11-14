@@ -92,7 +92,7 @@ void readRecoveryTests() {
     assert(!retry.completed(S::Network) && retry.delayMs()==2000);
     assert(!retry.completed(S::Network) && retry.delayMs()==5000);
     assert(retry.completed(S::Network) && retry.delayMs()==15000);
-    for(int i=0;i<8;++i) assert(!retry.completed(S::Network) && retry.delayMs()==30000);
+    for(int i=0;i<8;++i) assert(retry.completed(S::Network) && retry.delayMs()==30000);
     assert(!retry.completed(S::Ok) && retry.delayMs()==15000);
     assert(!retry.completed(S::Network) && retry.delayMs()==2000);
     assert(panel::responseStatus(PanelRequest::Read,503)==S::Unavailable);

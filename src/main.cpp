@@ -734,6 +734,7 @@ void servicePanel() {
 }
 void setup() {
     Serial.begin(115200);
+    checkedAt=millis()-30000;
     displayReady=psramFound() && screen.begin();
     if(!displayReady) { Serial.println("iBORK: RGB/PSRAM initialization failed"); return; }
     frame.setPsram(true);
@@ -781,7 +782,6 @@ void loop() {
         if(connected) {
 
             startPanelClock();
-            checkedAt=millis()-30000;
         } else health=PanelStatus::Network;
         if(was==view && brightness && (view==Fleet || view==Servers || view==Detail)) {
             refreshLink();

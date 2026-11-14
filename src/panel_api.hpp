@@ -68,7 +68,7 @@ struct ReadRetry {
             return false;
         }
         if(failures<4) ++failures;
-        return failures==3;
+        return failures>=3;
     }
     uint32_t delayMs() const {
         constexpr uint32_t delays[]={15000,2000,5000,15000,30000};
