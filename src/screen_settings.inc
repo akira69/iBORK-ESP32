@@ -80,7 +80,8 @@ void openSchedule() {
     scheduleNote="";
 }
 void scheduleButton(int x,int y,int w,const String &caption,bool selected=false) {
-    box(x,y,w,48,selected?0x215448:tile);
+    box(x,y,w,48);
+    if(selected) lcd->drawRoundRect(x,y,w,48,10,mint);
     label(x+10,y+12,caption,selected?mint:ink);
 }
 void drawDisplay() {

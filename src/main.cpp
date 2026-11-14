@@ -21,19 +21,29 @@ panel::TouchRetry touchRetry;
 
 enum View { Fleet, Servers, Detail, Pin, Settings, Network, ChangePin, Display, Schedule, DisplayPin, Colors, Clock };
 View view=Fleet;
-constexpr uint32_t bar=0x101c29, grid=0x344959, teal=0x64efc4;
-struct Palette { const char *name; uint32_t background, surface, accent; };
+struct Palette { const char *name; uint32_t background, surface, header, line, accent; };
 constexpr Palette palettes[]={
-    {"Teal",0x0a131e,0x192b39,teal}, {"Amber",0x1d1711,0x352d22,0xffbf69},
-    {"Ice",0x101a29,0x223649,0x9bccff}, {"Crimson",0x220e15,0x441c29,0xff6378}
+    {"Teal",0x0a131e,0x192b39,0x101c29,0x344959,0x64efc4},
+    {"Amber",0x1a1510,0x30271d,0x211a13,0x594735,0xffbf69},
+    {"Ice",0x111a22,0x22313e,0x17232d,0x405768,0xb4dbf5},
+    {"Crimson",0x1b1217,0x35232c,0x251820,0x5b3b4a,0xff879b},
+    {"Graphite",0x121416,0x272a2e,0x1b1d20,0x474c52,0xdbe2e8},
+    {"Forest",0x111a14,0x23342a,0x17231b,0x3d5948,0xa8dd95},
+    {"Ocean",0x10192e,0x212e4b,0x17223a,0x3d5277,0x8fb2ff},
+    {"Copper",0x201713,0x3a2922,0x2a1e18,0x604438,0xffab8e}
 };
-static_assert(sizeof(palettes)/sizeof(*palettes)==4,"Color picker has four tiles");
+static_assert(sizeof(palettes)/sizeof(*palettes)==panel::paletteCount,"Each palette needs a touch target");
 unsigned theme;
+bool headerDrawn;
 const char *themeNote="";
 uint32_t bg=palettes[0].background, tile=palettes[0].surface, mint=palettes[0].accent;
+uint32_t bar=palettes[0].header, grid=palettes[0].line;
 void setTheme(unsigned index) {
-    theme=index<sizeof(palettes)/sizeof(*palettes)?index:0;
-    bg=palettes[theme].background; tile=palettes[theme].surface; mint=palettes[theme].accent;
+    theme=index<panel::paletteCount?index:0;
+    const auto &palette=palettes[theme];
+    bg=palette.background; tile=palette.surface; mint=palette.accent;
+    bar=palette.header; grid=palette.line;
+    headerDrawn=false;
 }
 constexpr uint32_t ink=0xf2f7f8, muted=0xaac1cc, gold=0xffbc66;
 constexpr int gearX=645, gearY=8, gearW=60, gearH=54;
@@ -238,7 +248,7 @@ void fleetCards(const panel::SectionBox &b,int top,int bottom) {
             continue;
         }
         box(x,y,panel::cardWidth,panel::cardHeight);
-        if(s.metered) lcd->drawRoundRect(x,y,panel::cardWidth,panel::cardHeight,10,teal);
+        if(s.metered) lcd->drawRoundRect(x,y,panel::cardWidth,panel::cardHeight,10,mint);
         sidebarIcon(s,x+5,y+5);
         lcd->setClipRect(x+51,top,panel::cardWidth-75,bottom-top);
         label(x+51,y+3,s.sidebarLabel[0]?s.sidebarLabel:s.name);
@@ -274,7 +284,7 @@ void fleet(int top=panel::headerHeight,int bottom=panel::screenBottom) {
             if(!refreshing) {
                 box(b.x,b.y,b.w,b.h);
                 label(30,b.y+6,"Current fleet power",muted);
-                if(hasData) lcd->drawRoundRect(624,b.y+17,144,36,10,teal);
+                if(hasData) lcd->drawRoundRect(624,b.y+17,144,36,10,mint);
             }
             field(power,30,b.y+24,248,44,reporting?watts(total):"-- W",mint,3);
             if(hasData) field(meters,634,b.y+25,124,20,
@@ -478,20 +488,18 @@ void refreshLink() {
     lcd=&screen; refreshing=false;
 }
 void drawColors() {
-    label(20,89,"Color mode",ink,3);
-    for(unsigned i=0;i<sizeof(palettes)/sizeof(*palettes);++i) {
+    label(16,82,"Panel theme",ink,2);
+    for(unsigned i=0;i<panel::paletteCount;++i) {
         const auto &palette=palettes[i];
         const int x=panel::paletteX(i), y=panel::paletteY(i);
-        box(x,y,panel::paletteWidth,panel::paletteHeight,palette.surface);
+        box(x,y,panel::paletteWidth,panel::paletteHeight,palette.background);
         lcd->drawRoundRect(x,y,panel::paletteWidth,panel::paletteHeight,10,i==theme?palette.accent:grid);
-        label(x+16,y+10,palette.name,ink,2);
-        if(i==theme) label(x+245,y+16,"Selected",ink);
-        int swatch=x+16;
-        for(auto color:{palette.background,palette.surface,palette.accent}) {
-            lcd->fillRoundRect(swatch,y+57,96,32,5,color);
-            lcd->drawRoundRect(swatch,y+57,96,32,5,muted);
-            swatch+=108;
-        }
+        label(x+12,y+9,palette.name,ink,2);
+        lcd->fillRoundRect(x+12,y+47,panel::paletteWidth-24,44,6,palette.surface);
+        lcd->fillRect(x+12,y+58,panel::paletteWidth-24,2,palette.line);
+        lcd->fillCircle(x+29,y+74,5,palette.accent);
+        lcd->fillRoundRect(x+43,y+71,70,5,2,palette.accent);
+        if(i==theme) label(x+12,y+99,"Selected",palette.accent);
     }
     label(20,424,themeNote,gold);
 }
@@ -499,14 +507,13 @@ void draw() {
     gesture.cancel();
     if(!brightness) return;
     if(buffered) lcd=&frame;
-    static bool headerDrawn=false;
     if(!headerDrawn) {
         lcd->fillRect(0,0,800,70,bar); lcd->drawFastHLine(0,69,800,grid);
         image(ibork,iborkEnd,8,1); image(finch,finchEnd,722,1);
         box(gearX,gearY,gearW,gearH);
         image(settings,settingsEnd,gearX+(gearW-36)/2,gearY+(gearH-36)/2);
         label(82,17,"iBORK",ink,2);
-        headerDrawn=true;
+        headerDrawn=true; clockDirty=true;
     }
     lcd->fillRect(panel::navX,7,panel::navW,55,bar);
     if(view!=Fleet && view!=Servers) lcd->fillRect(0,70,800,410,bg);
@@ -537,7 +544,7 @@ void draw() {
             box(16,350,373,64); box(405,350,377,64);
             label(36,365,"Display",ink,2);
             label(355,365,">",mint,2);
-            label(424,365,String("Color: ")+palettes[theme].name,ink,2);
+            label(424,365,String("Theme: ")+palettes[theme].name,ink,2);
             label(748,365,">",mint,2);
             label(20,430,changePinMessage,muted);
             break;

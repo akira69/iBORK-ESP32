@@ -11,7 +11,8 @@ void drawPinInput() {
     label(22,249,mask,ink,2);
 }
 void drawPinSubmit(const char *caption,bool enabled) {
-    box(426,369,333,74,enabled?0x215448:tile);
+    box(426,369,333,74);
+    if(enabled) lcd->drawRoundRect(426,369,333,74,10,mint);
     label(442,387,caption,enabled?ink:muted,2);
 }
 void drawPinKeys(const char *caption,bool enabled) {
