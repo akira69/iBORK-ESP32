@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
 
 namespace panel {
@@ -27,6 +29,10 @@ inline int localMinuteOfDay(time_t now) {
     struct tm local{};
     if (now<1704067200 || !localtime_r(&now,&local)) return -1;
     return local.tm_hour*60+local.tm_min;
+}
+inline void formatMinuteOfDay(char (&clock)[6], int minute) {
+    if (minute<0 || minute>=1440) std::memcpy(clock,"--:--",sizeof(clock));
+    else std::snprintf(clock,sizeof(clock),"%02d:%02d",minute/60,minute%60);
 }
 inline int brightnessAt(const DisplaySchedule &schedule, int minuteOfDay) {
     if (minuteOfDay<0 || minuteOfDay>=1440 || !validDisplaySchedule(schedule)) return 100;

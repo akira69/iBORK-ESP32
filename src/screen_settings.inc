@@ -58,7 +58,7 @@ bool wakeTouch(panel::Contact event) {
 }
 String startText(int start) {
     char clock[6];
-    snprintf(clock,sizeof(clock),"%02d:%02d",start/60,start%60);
+    panel::formatMinuteOfDay(clock,start);
     return clock;
 }
 String stateText(int level) {

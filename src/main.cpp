@@ -418,13 +418,28 @@ void connectionIcons() {
     }
 }
 void refreshStatus() {
-    lcd->fillRect(312,7,208,56,bar);
-    lcd->setClipRect(312,7,184,56);
+    lcd->fillRect(330,7,190,56,bar);
+    lcd->setClipRect(330,7,190,56);
     paintedHealth=healthText();
-    label(315,24,paintedHealth,gold);
+    label(333,24,paintedHealth,gold);
     lcd->clearClipRect();
     connectionIcons();
-    publish(312,7,318,56);
+    publish(330,7,300,56);
+}
+void refreshClock() {
+    static int paintedMinute=-2;
+    static time_t checkedSecond=-1;
+    const time_t now=time(nullptr);
+    if(now==checkedSecond) return;
+    checkedSecond=now;
+    const int minute=panel::localMinuteOfDay(now);
+    if(minute==paintedMinute) return;
+    paintedMinute=minute;
+    char clock[6];
+    panel::formatMinuteOfDay(clock,minute);
+    lcd->fillRect(158,7,56,56,bar);
+    label(161,24,clock,ink);
+    publish(158,7,56,56);
 }
 void pollSpinner() {
     static int previous=-1;
@@ -473,7 +488,7 @@ void draw() {
         label(82,17,"iBORK",ink,2);
         headerDrawn=true;
     }
-    lcd->fillRect(198,7,322,55,bar);
+    lcd->fillRect(panel::navX,7,panel::navW,55,bar);
     if(view!=Fleet && view!=Servers) lcd->fillRect(0,70,800,410,bg);
     const bool selector=showServerSelector();
     if(view!=Fleet || selector) {
@@ -481,6 +496,7 @@ void draw() {
         label(panel::navX+12,19,selector?"Servers":"< Back",ink,2);
     }
     refreshStatus();
+    refreshClock();
     switch(view) {
         case Fleet: case Servers: fleet(); break; case Detail: detail(); break;
         case Pin: keypad(); break; case Network: networkView(); break;
@@ -705,7 +721,13 @@ void setup() {
 void loop() {
     if(!displayReady) { delay(100); return; }
     serviceWiFi();
-    bool online=WiFi.status()==WL_CONNECTED && WiFi.localIP()!=IPAddress();
+    const bool online=WiFi.status()==WL_CONNECTED && WiFi.localIP()!=IPAddress();
+    static panel::StationRetry stationRetry;
+    if(stationRetry.due(online || !WiFi.getAutoReconnect() || view==Network || joining ||
+                        scanCount==WIFI_SCAN_RUNNING,millis())) {
+        Serial.println("iBORK Wi-Fi: retrying saved network");
+        esp_wifi_connect();
+    }
     if(connected!=online) {
         const auto was=view;
         connected=online;
@@ -722,6 +744,13 @@ void loop() {
     servicePanel();
     serviceChangePin();
     serviceScreen();
+    if(brightness) {
+        refreshing=true;
+        if(buffered) lcd=&frame;
+        refreshClock();
+        lcd=&screen;
+        refreshing=false;
+    }
     if(locked && millis()-lockedAt>=30000) { locked=false; notice=""; if(view==Pin) draw(); }
     if(brightness && connectionChanged()) {
         if(view==Fleet || view==Servers || view==Detail) {

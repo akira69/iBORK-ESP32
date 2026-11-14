@@ -4,7 +4,7 @@
 
 int main() {
     using namespace panel;
-    static_assert(!navHit(74,32) && !navHit(120,32) && navHit(198,10) && navHit(305,57) && !navHit(306,57));
+    static_assert(!navHit(74,32) && !navHit(200,32) && navHit(218,10) && navHit(325,57) && !navHit(326,57));
     for(int i=0;i<4;++i) {
         const int x=paletteX(i), y=paletteY(i);
         assert(paletteAt(x,y)==i && paletteAt(x+paletteWidth-1,y+paletteHeight-1)==i);

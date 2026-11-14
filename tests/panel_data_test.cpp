@@ -17,6 +17,13 @@ void displayTests() {
     tzset();
     assert(panel::localMinuteOfDay(1793494740)==119 && panel::localMinuteOfDay(1793494800)==60);
     assert(panel::localMinuteOfDay(1772935140)==119 && panel::localMinuteOfDay(1772935200)==180);
+    char clock[6];
+    panel::formatMinuteOfDay(clock, -1);
+    assert(std::string(clock)=="--:--");
+    panel::formatMinuteOfDay(clock, 0);
+    assert(std::string(clock)=="00:00");
+    panel::formatMinuteOfDay(clock, 23*60+59);
+    assert(std::string(clock)=="23:59");
     schedule.revision=UINT32_MAX;
     for (int i=0; i<4; ++i) schedule.periods[i]={1439-i,100};
     char body[220]{};
@@ -51,6 +58,15 @@ void displayTests() {
 }
 void readRecoveryTests() {
     using S=PanelStatus;
+    panel::StationRetry station;
+    const uint32_t lostAt=UINT32_MAX-10;
+    assert(!station.due(true, lostAt));
+    assert(!station.due(false, lostAt+29999));
+    assert(station.due(false, lostAt+30000));
+    assert(!station.due(false, lostAt+30001));
+    assert(!station.due(true, lostAt+60000));
+    assert(!station.due(false, lostAt+89999));
+    assert(station.due(false, lostAt+90000));
     panel::ReadRetry retry;
     assert(retry.delayMs()==15000);
     assert(!retry.completed(S::Network) && retry.delayMs()==2000);
