@@ -19,7 +19,7 @@ uint32_t chartUs, publishUs;
 panel::TouchRetry touchRetry;
 
 
-enum View { Fleet, Servers, Detail, Pin, Settings, Network, ChangePin, Display, Schedule, DisplayPin, Colors };
+enum View { Fleet, Servers, Detail, Pin, Settings, Network, ChangePin, Display, Schedule, DisplayPin, Colors, Clock };
 View view=Fleet;
 constexpr uint32_t bar=0x101c29, grid=0x344959, teal=0x64efc4;
 struct Palette { const char *name; uint32_t background, surface, accent; };
@@ -430,15 +430,29 @@ void refreshClock() {
     static int paintedMinute=-2;
     static time_t checkedSecond=-1;
     const time_t now=time(nullptr);
-    if(now==checkedSecond) return;
+    if(now==checkedSecond && !clockDirty) return;
     checkedSecond=now;
     const int minute=panel::localMinuteOfDay(now);
-    if(minute==paintedMinute) return;
+    if(minute==paintedMinute && !clockDirty) return;
     paintedMinute=minute;
+    clockDirty=false;
     char clock[6];
-    panel::formatMinuteOfDay(clock,minute);
+    const auto meridiem=panel::formatClock(clock,minute,clockSettings.mode);
     lcd->fillRect(158,7,56,56,bar);
-    label(161,24,clock,ink);
+    if(clock[0]) {
+        const bool boxed=clockSettings.style==2;
+        const uint32_t color=clockSettings.style==1?mint:ink;
+        if(boxed) lcd->drawRoundRect(158,11,56,46,6,grid);
+        const int y=*meridiem?14:24;
+        if(clockSettings.font==0) label(162,y,clock,color);
+        else {
+            lcd->setFont(&fonts::Font2);
+            lcd->setTextSize(1);
+            lcd->setTextColor(color);
+            lcd->drawString(clock,162,y);
+        }
+        if(*meridiem) label(175,36,meridiem,color);
+    }
     publish(158,7,56,56);
 }
 void pollSpinner() {
@@ -502,6 +516,7 @@ void draw() {
         case Pin: keypad(); break; case Network: networkView(); break;
         case ChangePin: drawChangePin(); break;
         case Display: drawDisplay(); break;
+        case Clock: drawClockSettings(); break;
         case Schedule: drawSchedule(); break;
         case DisplayPin: drawSchedulePin(); break;
         case Colors: drawColors(); break;
@@ -548,7 +563,7 @@ void tap(int x,int y) {
         else if(view==Network) { forgetPass(); view=Settings; }
         else if(view==ChangePin) cancelChangePin();
         else if(view==Display || view==Colors) view=Settings;
-        else if(view==Schedule) view=Display;
+        else if(view==Schedule || view==Clock) view=Display;
         else if(view==DisplayPin) { clearPin(); view=Schedule; }
         else {
             if(view==Pin) view=Detail;
@@ -565,6 +580,8 @@ void tap(int x,int y) {
         } else themeNote="Could not save color. Tap to retry.";
     } else if(view==Display) {
         tapDisplay(x,y); return;
+    } else if(view==Clock) {
+        tapClockSettings(x,y); return;
     } else if(view==Schedule || view==DisplayPin) {
         tapSchedule(x,y); return;
     } else if(view==ChangePin) {

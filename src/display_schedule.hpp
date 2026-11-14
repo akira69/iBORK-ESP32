@@ -34,6 +34,22 @@ inline void formatMinuteOfDay(char (&clock)[6], int minute) {
     if (minute<0 || minute>=1440) std::memcpy(clock,"--:--",sizeof(clock));
     else std::snprintf(clock,sizeof(clock),"%02d:%02d",minute/60,minute%60);
 }
+enum class ClockMode : uint8_t { Hour24, Hour12, Off };
+struct ClockSettings {
+    ClockMode mode=ClockMode::Hour24;
+    uint8_t font=0, style=0;
+    bool valid() const { return mode<=ClockMode::Off && font<2 && style<3; }
+};
+inline const char *formatClock(char (&clock)[6], int minute, ClockMode mode) {
+    if(mode==ClockMode::Off) { clock[0]='\0'; return ""; }
+    if(mode!=ClockMode::Hour12 || minute<0 || minute>=1440) {
+        formatMinuteOfDay(clock,minute);
+        return "";
+    }
+    const int hour=(minute/60+11)%12+1;
+    formatMinuteOfDay(clock,hour*60+minute%60);
+    return minute<720?"AM":"PM";
+}
 inline int brightnessAt(const DisplaySchedule &schedule, int minuteOfDay) {
     if (minuteOfDay<0 || minuteOfDay>=1440 || !validDisplaySchedule(schedule)) return 100;
     int closest=1440, brightness=100;

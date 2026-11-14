@@ -2,6 +2,9 @@
 panel::DisplaySchedule schedule=panel::defaultDisplaySchedule(), draft;
 panel::ScreenWake wake;
 panel::BrightnessSlider brightnessSlider;
+panel::ClockSettings clockSettings;
+bool clockDirty=true;
+const char *clockNote="";
 int periodIndex, brightness=100;
 bool canDim, savingSchedule, cacheSaved=true;
 const char *scheduleNote="";
@@ -11,6 +14,10 @@ void loadSchedule() {
     Preferences prefs;
     panel::DisplaySchedule saved{};
     if(!prefs.begin("display",true)) return;
+    panel::ClockSettings savedClock;
+    if(prefs.getBytesLength("clock-v1")==sizeof(savedClock) &&
+       prefs.getBytes("clock-v1",&savedClock,sizeof(savedClock))==sizeof(savedClock) &&
+       savedClock.valid()) clockSettings=savedClock;
     const int manual=prefs.getUChar("brightness",0);
     wake.manualBrightness=manual<=100?manual:0;
     if(prefs.getBytesLength(scheduleKey())==sizeof(saved) &&
@@ -88,6 +95,7 @@ void drawDisplay() {
     label(20,328,"Schedule",ink,2);
     label(20,368,"Four daily periods in panel local time",muted);
     scheduleButton(604,344,174,"Edit schedule");
+    scheduleButton(604,408,174,"Clock settings");
     label(20,432,canDim?displayNote:"Backlight control unavailable.",gold);
 }
 void saveBrightness() {
@@ -114,7 +122,36 @@ void tapDisplay(int x,int y) {
         saveBrightness();
         setScreenBrightness(panel::brightnessAt(schedule,panel::localMinuteOfDay(time(nullptr))));
     } else if(x>=604 && x<778 && y>=344 && y<392) openSchedule();
+    else if(x>=604 && x<778 && y>=408 && y<456) { view=Clock; clockNote=""; }
     else return;
+    draw();
+}
+constexpr int clockRowY=144, clockRowGap=102, clockOptionX=20, clockOptionGap=186, clockOptionW=174;
+constexpr const char *clockLabels[]={"Time format", "Font", "Style"};
+constexpr const char *clockOptions[][3]={{"24-hour","12-hour","Off"},{"Panel","Bitmap"},{"Plain","Accent","Framed"}};
+void drawClockSettings() {
+    label(18,78,"Clock settings",ink,2);
+    const int selected[]={int(clockSettings.mode),clockSettings.font,clockSettings.style};
+    for(int row=0;row<3;++row) {
+        const int y=clockRowY+row*clockRowGap;
+        label(clockOptionX,y-26,clockLabels[row],muted);
+        for(int i=0;i<3 && clockOptions[row][i];++i)
+            scheduleButton(clockOptionX+i*clockOptionGap,y,clockOptionW,clockOptions[row][i],selected[row]==i);
+    }
+    label(20,442,clockNote,gold);
+}
+void tapClockSettings(int x,int y) {
+    if(x<clockOptionX || y<clockRowY) return;
+    const int row=(y-clockRowY)/clockRowGap, option=(x-clockOptionX)/clockOptionGap;
+    if(row>=3 || option>=3 || !clockOptions[row][option] ||
+       (y-clockRowY)%clockRowGap>=48 || (x-clockOptionX)%clockOptionGap>=clockOptionW) return;
+    if(row==0) clockSettings.mode=static_cast<panel::ClockMode>(option);
+    else if(row==1) clockSettings.font=option;
+    else clockSettings.style=option;
+    Preferences prefs;
+    clockNote=prefs.begin("display",false) && prefs.putBytes("clock-v1",&clockSettings,sizeof(clockSettings))==sizeof(clockSettings)?
+        "":"Applied; local save failed. Tap again to retry.";
+    clockDirty=true;
     draw();
 }
 void drawSchedule() {
