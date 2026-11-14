@@ -65,7 +65,7 @@ bool fresh() { return !live || (connected && health==PanelStatus::Ok && recentRe
                   extern const uint8_t name##End[] asm("_binary_art_" #name "_" #ext "_end")
 ART(ibork,jpg); ART(finch,jpg); ART(settings,jpg); ART(transmission,png);
 ART(knife0,png); ART(knife4,png);
-void label(int x, int y, const String &value, uint32_t color = ink, int size = 1) {
+const lgfx::IFont *panelFont(int size) {
     extern const uint8_t small[] asm("_binary_fonts_panel16_vlw_start");
     extern const uint8_t medium[] asm("_binary_fonts_panel25_vlw_start");
     extern const uint8_t large[] asm("_binary_fonts_panel40_vlw_start");
@@ -75,8 +75,10 @@ void label(int x, int y, const String &value, uint32_t color = ink, int size = 1
         faces[0].loadFont(&data[0]), faces[1].loadFont(&data[1]), faces[2].loadFont(&data[2])
     };
     const int index = constrain(size, 1, 3) - 1;
-    if (loaded[index]) lcd->setFont(&faces[index]);
-    else lcd->setFont(&fonts::Font2);
+    return loaded[index]?static_cast<const lgfx::IFont *>(&faces[index]):&fonts::Font2;
+}
+void label(int x, int y, const String &value, uint32_t color = ink, int size = 1) {
+    lcd->setFont(panelFont(size));
     lcd->setTextSize(1);
     lcd->setTextColor(color);
     lcd->drawString(value.c_str(), x, y);
@@ -408,23 +410,23 @@ void connectionIcons() {
     const uint32_t wifi=connected?active:unavailable;
     paintedLink=live && fresh();
     const uint32_t link=paintedLink?active:unavailable;
-    lcd->fillRect(520,10,110,49,bar);
-    for(int radius:{24,16,8}) lcd->fillArc(548,46,radius,radius-3,222,318,wifi);
-    lcd->fillCircle(548,46,3,wifi);
+    lcd->fillRect(576,10,59,49,bar);
+    for(int radius:{18,12,6}) lcd->fillArc(592,44,radius,radius-2,222,318,wifi);
+    lcd->fillCircle(592,44,2,wifi);
     for(int y:{19,36}) {
-        lcd->drawRoundRect(590,y,32,14,3,link);
-        lcd->fillCircle(597,y+7,2,link);
-        lcd->drawFastHLine(605,y+7,10,link);
+        lcd->drawRoundRect(610,y,24,14,3,link);
+        lcd->fillCircle(616,y+7,2,link);
+        lcd->drawFastHLine(622,y+7,7,link);
     }
 }
 void refreshStatus() {
-    lcd->fillRect(330,7,190,56,bar);
-    lcd->setClipRect(330,7,190,56);
+    lcd->fillRect(396,7,180,56,bar);
+    lcd->setClipRect(396,7,180,56);
     paintedHealth=healthText();
-    label(333,24,paintedHealth,gold);
+    label(397,24,paintedHealth,gold);
     lcd->clearClipRect();
     connectionIcons();
-    publish(330,7,300,56);
+    publish(396,7,239,56);
 }
 void refreshClock() {
     static int paintedMinute=-2;
@@ -438,22 +440,26 @@ void refreshClock() {
     clockDirty=false;
     char clock[6];
     const auto meridiem=panel::formatClock(clock,minute,clockSettings.mode);
-    lcd->fillRect(158,7,56,56,bar);
+    constexpr int x=170, width=110;
+    lcd->fillRect(x,7,width,56,bar);
     if(clock[0]) {
-        const bool boxed=clockSettings.style==2;
-        const uint32_t color=clockSettings.style==1?mint:ink;
-        if(boxed) lcd->drawRoundRect(158,11,56,46,6,grid);
-        const int y=*meridiem?14:24;
-        if(clockSettings.font==0) label(162,y,clock,color);
-        else {
-            lcd->setFont(&fonts::Font2);
-            lcd->setTextSize(1);
-            lcd->setTextColor(color);
-            lcd->drawString(clock,162,y);
-        }
-        if(*meridiem) label(175,36,meridiem,color);
+        const uint32_t colors[]={clockSettings.style==1?mint:ink,0x64efc4,0xffbc66,0x9bccff};
+        const uint32_t color=colors[clockSettings.color];
+        if(clockSettings.style==2) lcd->drawRoundRect(x,8,width,54,6,grid);
+        const lgfx::IFont *faces[]={panelFont(1),&fonts::Font2,&fonts::Font7};
+        lcd->setFont(faces[clockSettings.font]);
+        lcd->setTextSize(1);
+        constexpr float heights[]={16,23,31};
+        const float scale=min(heights[clockSettings.size]/lcd->fontHeight(),100.0f/lcd->textWidth(clock));
+        lcd->setTextSize(scale);
+        lcd->setTextColor(color);
+        const int left=x+(width-lcd->textWidth(clock)-clockSettings.bold)/2;
+        const int top=(*meridiem?25:34)-lcd->fontHeight()/2;
+        lcd->drawString(clock,left,top);
+        if(clockSettings.bold) lcd->drawString(clock,left+1,top);
+        if(*meridiem) label(x+44,43,meridiem,color);
     }
-    publish(158,7,56,56);
+    publish(x,7,width,56);
 }
 void pollSpinner() {
     static int previous=-1;
@@ -461,8 +467,8 @@ void pollSpinner() {
     const int phase=loading?int((millis()/125)%8):-1;
     if(!brightness || phase==previous) return;
     previous=phase;
-    screen.fillRect(497,21,22,24,bar);
-    if(phase>=0) screen.fillArc(508,33,8,5,phase*45,phase*45+215,mint);
+    screen.fillRect(549,44,22,22,bar);
+    if(phase>=0) screen.fillArc(560,55,8,5,phase*45,phase*45+215,mint);
 }
 void refreshLink() {
     refreshing=true;

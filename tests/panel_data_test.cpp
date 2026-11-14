@@ -36,7 +36,13 @@ void displayTests() {
     assert(std::string(clock).empty());
     assert(panel::ClockSettings{}.valid());
     auto invalidClock=panel::ClockSettings{};
-    invalidClock.font=255;
+    invalidClock.font=2;
+    assert(invalidClock.valid());
+    invalidClock.size=2;
+    invalidClock.color=3;
+    invalidClock.bold=1;
+    assert(invalidClock.valid());
+    invalidClock.color=255;
     assert(!invalidClock.valid());
     schedule.revision=UINT32_MAX;
     for (int i=0; i<4; ++i) schedule.periods[i]={1439-i,100};

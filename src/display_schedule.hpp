@@ -38,7 +38,8 @@ enum class ClockMode : uint8_t { Hour24, Hour12, Off };
 struct ClockSettings {
     ClockMode mode=ClockMode::Hour24;
     uint8_t font=0, style=0;
-    bool valid() const { return mode<=ClockMode::Off && font<2 && style<3; }
+    uint8_t size=0, color=0, bold=0;
+    bool valid() const { return mode<=ClockMode::Off && font<3 && style<3 && size<3 && color<4 && bold<2; }
 };
 inline const char *formatClock(char (&clock)[6], int minute, ClockMode mode) {
     if(mode==ClockMode::Off) { clock[0]='\0'; return ""; }

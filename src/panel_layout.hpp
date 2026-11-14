@@ -15,7 +15,7 @@ constexpr Sections defaultHome{4,{Section::Power,Section::Day,Section::Month,Sec
 constexpr Sections defaultWidgets{2,{Section::Power,Section::Controls}};
 constexpr Sections selectorSections{1,{Section::Servers}};
 constexpr int headerHeight=70, screenBottom=480, columns=4, columnWidth=194, cardWidth=188, rowHeight=56, cardHeight=50;
-constexpr int navX=218, navY=10, navW=108, navH=48;
+constexpr int navX=284, navY=10, navW=108, navH=48;
 constexpr bool navHit(int x,int y) { return x>=navX && x<navX+navW && y>=navY && y<navY+navH; }
 constexpr int paletteWidth=374, paletteHeight=108;
 constexpr int paletteX(int index) { return 16+(index%2)*394; }

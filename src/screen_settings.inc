@@ -15,8 +15,10 @@ void loadSchedule() {
     panel::DisplaySchedule saved{};
     if(!prefs.begin("display",true)) return;
     panel::ClockSettings savedClock;
-    if(prefs.getBytesLength("clock-v1")==sizeof(savedClock) &&
-       prefs.getBytes("clock-v1",&savedClock,sizeof(savedClock))==sizeof(savedClock) &&
+    const size_t clockBytes=prefs.getBytesLength("clock-v1");
+    // The previous format stored only mode, font and style.
+    if((clockBytes==3 || clockBytes==sizeof(savedClock)) &&
+       prefs.getBytes("clock-v1",&savedClock,clockBytes)==clockBytes &&
        savedClock.valid()) clockSettings=savedClock;
     const int manual=prefs.getUChar("brightness",0);
     wake.manualBrightness=manual<=100?manual:0;
@@ -126,16 +128,18 @@ void tapDisplay(int x,int y) {
     else return;
     draw();
 }
-constexpr int clockRowY=144, clockRowGap=102, clockOptionX=20, clockOptionGap=186, clockOptionW=174;
-constexpr const char *clockLabels[]={"Time format", "Font", "Style"};
-constexpr const char *clockOptions[][3]={{"24-hour","12-hour","Off"},{"Panel","Bitmap"},{"Plain","Accent","Framed"}};
+constexpr int clockRowY=144, clockRowGap=49, clockOptionX=140, clockOptionGap=160, clockOptionW=148;
+constexpr const char *clockLabels[]={"Time format", "Font", "Style", "Size", "Color", "Weight"};
+constexpr const char *clockOptions[][4]={{"24-hour","12-hour","Off"},{"Panel","Bitmap","Seven-segment"},
+    {"Plain","Accent","Framed"},{"Small","Medium","Large"},{"Default","Mint","Amber","Ice"},{"Regular","Bold"}};
 void drawClockSettings() {
     label(18,78,"Clock settings",ink,2);
-    const int selected[]={int(clockSettings.mode),clockSettings.font,clockSettings.style};
-    for(int row=0;row<3;++row) {
+    const int selected[]={int(clockSettings.mode),clockSettings.font,clockSettings.style,
+        clockSettings.size,clockSettings.color,clockSettings.bold};
+    for(int row=0;row<6;++row) {
         const int y=clockRowY+row*clockRowGap;
-        label(clockOptionX,y-26,clockLabels[row],muted);
-        for(int i=0;i<3 && clockOptions[row][i];++i)
+        label(20,y+12,clockLabels[row],muted);
+        for(int i=0;i<4 && clockOptions[row][i];++i)
             scheduleButton(clockOptionX+i*clockOptionGap,y,clockOptionW,clockOptions[row][i],selected[row]==i);
     }
     label(20,442,clockNote,gold);
@@ -143,11 +147,14 @@ void drawClockSettings() {
 void tapClockSettings(int x,int y) {
     if(x<clockOptionX || y<clockRowY) return;
     const int row=(y-clockRowY)/clockRowGap, option=(x-clockOptionX)/clockOptionGap;
-    if(row>=3 || option>=3 || !clockOptions[row][option] ||
+    if(row>=6 || option>=4 || !clockOptions[row][option] ||
        (y-clockRowY)%clockRowGap>=48 || (x-clockOptionX)%clockOptionGap>=clockOptionW) return;
     if(row==0) clockSettings.mode=static_cast<panel::ClockMode>(option);
     else if(row==1) clockSettings.font=option;
-    else clockSettings.style=option;
+    else {
+        uint8_t *values[]={&clockSettings.font,&clockSettings.style,&clockSettings.size,&clockSettings.color,&clockSettings.bold};
+        *values[row-1]=option;
+    }
     Preferences prefs;
     clockNote=prefs.begin("display",false) && prefs.putBytes("clock-v1",&clockSettings,sizeof(clockSettings))==sizeof(clockSettings)?
         "":"Applied; local save failed. Tap again to retry.";
